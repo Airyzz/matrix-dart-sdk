@@ -29,8 +29,11 @@ class VoIP {
   /// cached turn creds
   TurnServerCredentials? _turnServerCredentials;
 
-  Map<VoipId, CallSession> calls = {};
-  Map<VoipId, GroupCallSession> groupCalls = {};
+  Map<VoipId, CallSession> get calls => _calls;
+  final Map<VoipId, CallSession> _calls = {};
+
+  Map<VoipId, GroupCallSession> get groupCalls => _groupCalls;
+  final Map<VoipId, GroupCallSession> _groupCalls = {};
 
   final CachedStreamController<CallSession> onIncomingCall =
       CachedStreamController();
@@ -54,7 +57,8 @@ class VoIP {
 
   /// map of roomIds to the invites they are currently processing or in a call with
   /// used for handling glare in p2p calls
-  Map<String, String> incomingCallRoomId = {};
+  Map<String, String> get incomingCallRoomId => _incomingCallRoomId;
+  final Map<String, String> _incomingCallRoomId = {};
 
   /// the current instance of voip, changing this will drop any ongoing mesh calls
   /// with that sessionId
@@ -389,7 +393,7 @@ class VoIP {
       Logs().v(
           '[VOIP] onCallInvite: Unable to handle new calls, maybe user is busy.');
       // no need to emit here because handleNewCall was never triggered yet
-      await newCall.reject(reason: CallErrorCode.user_busy, shouldEmit: false);
+      await newCall.reject(reason: CallErrorCode.userBusy, shouldEmit: false);
       await delegate.handleMissedCall(newCall);
       return;
     }
@@ -505,7 +509,7 @@ class VoIP {
     if (call != null) {
       // hangup in any case, either if the other party hung up or we did on another device
       await call.terminate(CallParty.kRemote,
-          content['reason'] ?? CallErrorCode.user_hangup, true);
+          content['reason'] ?? CallErrorCode.userHangup, true);
     } else {
       Logs().v('[VOIP] onCallHangup: Session [$callId] not found!');
     }
@@ -712,7 +716,7 @@ class VoIP {
   Future<GroupCallSession> _newGroupCall(
     String groupCallId,
     Room room,
-    List<CallBackend> backends,
+    CallBackend backend,
     String? application,
     String? scope, {
     bool enableE2EE = true,
@@ -727,7 +731,7 @@ class VoIP {
       client: client,
       room: room,
       voip: this,
-      backends: backends,
+      backend: backend,
       application: application,
       scope: scope,
       enableE2EE: enableE2EE,
@@ -749,7 +753,7 @@ class VoIP {
   Future<GroupCallSession> fetchOrCreateGroupCall(
     String groupCallId,
     Room room,
-    List<CallBackend> backends,
+    CallBackend backend,
     String? application,
     String? scope, {
     bool enableE2EE = true,
@@ -773,7 +777,7 @@ class VoIP {
       final groupCall = await _newGroupCall(
         groupCallId,
         room,
-        backends,
+        backend,
         application,
         scope,
         enableE2EE: enableE2EE,
@@ -823,11 +827,11 @@ class VoIP {
       client: client,
       voip: this,
       room: room,
-      backends: membership.backends,
+      backend: membership.backend,
       groupCallId: membership.callId,
       application: membership.application,
       scope: membership.scope,
-      enableE2EE: membership.backends.first is LiveKitBackend,
+      enableE2EE: membership.backend is LiveKitBackend,
     );
 
     if (groupCalls.containsKey(

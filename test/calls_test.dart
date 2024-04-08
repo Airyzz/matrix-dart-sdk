@@ -44,7 +44,7 @@ void main() {
       await call.sendCallReject(room, '1234', '4567', txid: '1234');
       await call.sendCallNegotiate(room, '1234', 1234, '4567', 'sdp',
           txid: '1234');
-      await call.sendHangupCall(room, '1234', '4567', 'user_hangup',
+      await call.sendHangupCall(room, '1234', '4567', 'userHangup',
           txid: '1234');
       await call.sendAssertedIdentity(
           room,
@@ -234,7 +234,7 @@ void main() {
 
       expect(call.state, CallState.kConnected);
 
-      await call.hangup(reason: CallErrorCode.user_hangup);
+      await call.hangup(reason: CallErrorCode.userHangup);
       expect(call.state, CallState.kEnded);
       expect(voip.currentCID, null);
     });
@@ -436,7 +436,7 @@ void main() {
       await Future.delayed(Duration(seconds: 3));
       expect(
           voip.currentCID, VoipId(roomId: room.id, callId: firstCall.callId));
-      await firstCall.hangup(reason: CallErrorCode.user_busy);
+      await firstCall.hangup(reason: CallErrorCode.userBusy);
     });
     test('Glare before invite was sent', () async {
       expect(voip.currentCID, null);
@@ -482,7 +482,7 @@ void main() {
               CallMembership(
                 userId: '@test1:example.com',
                 callId: '1111',
-                backends: [MeshBackend()],
+                backend: MeshBackend(),
                 deviceId: '1111',
                 expiresTs: DateTime.now()
                     .add(Duration(hours: 12))
@@ -507,7 +507,7 @@ void main() {
               CallMembership(
                 userId: '@test2:example.com',
                 callId: '1111',
-                backends: [MeshBackend()],
+                backend: MeshBackend(),
                 deviceId: '1111',
                 expiresTs: DateTime.now().millisecondsSinceEpoch,
                 roomId: room.id,
@@ -530,7 +530,7 @@ void main() {
               CallMembership(
                 userId: '@test2.0:example.com',
                 callId: '1111',
-                backends: [MeshBackend()],
+                backend: MeshBackend(),
                 deviceId: '1111',
                 expiresTs: DateTime.now().millisecondsSinceEpoch,
                 roomId: room.id,
@@ -553,7 +553,7 @@ void main() {
               CallMembership(
                 userId: '@test3:example.com',
                 callId: '1111',
-                backends: [MeshBackend()],
+                backend: MeshBackend(),
                 deviceId: '1111',
                 expiresTs: DateTime.now()
                     .subtract(Duration(hours: 1))
@@ -701,7 +701,7 @@ void main() {
                 CallMembership(
                   userId: '@test1:example.com',
                   callId: 'participants_count',
-                  backends: [MeshBackend()],
+                  backend: MeshBackend(),
                   deviceId: '1111',
                   expiresTs: DateTime.now()
                       .subtract(Duration(hours: 1))
@@ -729,7 +729,7 @@ void main() {
                 CallMembership(
                   userId: '@test2:example.com',
                   callId: 'participants_count',
-                  backends: [MeshBackend()],
+                  backend: MeshBackend(),
                   deviceId: '1111',
                   expiresTs: DateTime.now()
                       .add(Duration(hours: 1))
@@ -756,7 +756,7 @@ void main() {
                 CallMembership(
                   userId: '@test3:example.com',
                   callId: 'participants_count',
-                  backends: [MeshBackend()],
+                  backend: MeshBackend(),
                   deviceId: '1111',
                   expiresTs: DateTime.now().millisecondsSinceEpoch,
                   roomId: room.id,

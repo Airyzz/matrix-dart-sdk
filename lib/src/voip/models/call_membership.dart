@@ -30,7 +30,7 @@ class CallMembership {
   final String callId;
   final String? application;
   final String? scope;
-  final List<CallBackend> backends;
+  final CallBackend backend;
   final String deviceId;
   final int expiresTs;
   final String membershipId;
@@ -40,7 +40,7 @@ class CallMembership {
   CallMembership({
     required this.userId,
     required this.callId,
-    required this.backends,
+    required this.backend,
     required this.deviceId,
     required this.expiresTs,
     required this.roomId,
@@ -54,7 +54,7 @@ class CallMembership {
       'call_id': callId,
       'application': application,
       'scope': scope,
-      'foci_active': backends.map((e) => e.toJson()).toList(),
+      'foci_active': [backend],
       'device_id': deviceId,
       'expires_ts': expiresTs,
       'expires': 7200000, // element compatibiltiy remove asap
@@ -70,9 +70,9 @@ class CallMembership {
         callId: json['call_id'],
         application: json['application'],
         scope: json['scope'],
-        backends: (json['foci_active'] as List)
+        backend: (json['foci_active'] as List)
             .map((e) => CallBackend.fromJson(e))
-            .toList(),
+            .first,
         deviceId: json['device_id'],
         expiresTs: json['expires_ts'],
         membershipId:
@@ -94,7 +94,7 @@ class CallMembership {
           callId == other.callId &&
           application == other.application &&
           scope == other.scope &&
-          backends.first.type == other.backends.first.type &&
+          backend.type == other.backend.type &&
           deviceId == other.deviceId &&
           membershipId == other.membershipId;
 
@@ -105,7 +105,7 @@ class CallMembership {
       callId.hashCode ^
       application.hashCode ^
       scope.hashCode ^
-      backends.first.type.hashCode ^
+      backend.type.hashCode ^
       deviceId.hashCode ^
       membershipId.hashCode;
 

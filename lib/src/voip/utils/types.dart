@@ -44,61 +44,57 @@ enum CallState {
 
 enum CallErrorCode {
   /// The user chose to end the call
-  user_hangup,
+  userHangup('user_hangup'),
 
   /// An error code when the local client failed to create an offer.
-  local_offer_failed,
+  localOfferFailed('local_offer_failed'),
 
   /// An error code when there is no local mic/camera to use. This may be because
   /// the hardware isn't plugged in, or the user has explicitly denied access.
-  user_media_failed,
+  userMediaFailed('user_media_failed'),
 
   /// Error code used when a call event failed to send
   /// because unknown devices were present in the room
-  unknown_device,
-
-  /// Error code used when we fail to send the invite
-  /// for some reason other than there being unknown devices
-  send_invite,
+  unknownDevice('unknown_device'),
 
   /// An answer could not be created
-
-  create_answer,
-
-  /// Error code used when we fail to send the answer
-  /// for some reason other than there being unknown devices
-  send_answer,
+  createAnswer('create_answer'),
 
   /// The session description from the other side could not be set
-  set_remote_description,
+
+  setRemoteDescription('set_remote_description'),
 
   /// The session description from this side could not be set
-  set_local_description,
+  setLocalDescription('set_local_description'),
 
   /// A different device answered the call
-  answered_elsewhere,
+  answeredElsewhere('answered_elsewhere'),
 
   /// No media connection could be established to the other party
-  ice_failed,
+  iceFailed('ice_failed'),
 
   /// The invite timed out whilst waiting for an answer
-  invite_timeout,
+  inviteTimeout('invite_timeout'),
 
   /// The call was replaced by another call
-  replaced,
+  replaced('replaced'),
 
   /// Signalling for the call could not be sent (other than the initial invite)
-  ice_timeout,
+  iceTimeout('ice_timeout'),
 
   /// The remote party is busy
-  user_busy,
+  userBusy('user_busy'),
 
   /// We transferred the call off to somewhere else
-  transferred,
+  transferred('transferred'),
 
   /// Some other failure occurred that meant the client was unable to continue
   /// the call rather than the user choosing to end it.
-  unknown_error,
+  unknownError('unknown_error');
+
+  final String reason;
+
+  const CallErrorCode(this.reason);
 }
 
 class CallError extends Error {
@@ -149,24 +145,18 @@ enum MediaInputKind { videoinput, audioinput }
 
 enum MediaKind { video, audio }
 
-class GroupCallIntent {
-  static String Ring = 'm.ring';
-  static String Prompt = 'm.prompt';
-  static String Room = 'm.room';
-}
-
-class GroupCallType {
-  static String Video = 'm.video';
-  static String Voice = 'm.voice';
-}
-
-class GroupCallTerminationReason {
-  static String CallEnded = 'call_ended';
-}
-
 enum GroupCallErrorCode {
-  user_media_failed,
-  unknown_device,
+  /// An error code when there is no local mic/camera to use. This may be because
+  /// the hardware isn't plugged in, or the user has explicitly denied access.
+  userMediaFailed('user_media_failed'),
+
+  /// Some other failure occurred that meant the client was unable to continue
+  /// the call rather than the user choosing to end it.
+  unknownError('unknownError');
+
+  final String reason;
+
+  const GroupCallErrorCode(this.reason);
 }
 
 class GroupCallError extends Error {

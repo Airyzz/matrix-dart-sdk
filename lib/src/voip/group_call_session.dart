@@ -36,45 +36,52 @@ import 'package:matrix/src/voip/utils/stream_helper.dart';
 /// holding and managing the individual `CallSession`s in a group call.
 class GroupCallSession {
   // Config
-  static const updateExpireTsTimerDuration = Duration(seconds: 15);
-  static const expireTsBumpDuration = Duration(seconds: 45);
-  static const activeSpeakerInterval = Duration(seconds: 5);
 
   final Client client;
   final VoIP voip;
   final Room room;
 
-  /// is a list of backend to allow passing multiple backends in the future
+  /// is a list of backend to allow passing multiple backend in the future
   /// we use the first backend everywhere as of now
-  final List<CallBackend> backends;
+  final CallBackend backend;
   final String? application;
   final String? scope;
 
   GroupCallState state = GroupCallState.localCallFeedUninitialized;
+
   StreamSubscription<CallSession>? _callSubscription;
 
-  /// participant:volume
-  final Map<CallParticipant, double> audioLevelsMap = {};
-  CallParticipant? activeSpeaker;
-  WrappedMediaStream? localUserMediaStream;
-  WrappedMediaStream? localScreenshareStream;
-  String? localDesktopCapturerSourceId;
-  List<CallSession> callSessions = [];
+  CallParticipant? get activeSpeaker => _activeSpeaker;
+  CallParticipant? _activeSpeaker;
+
+  WrappedMediaStream? get localUserMediaStream => _localUserMediaStream;
+  WrappedMediaStream? _localUserMediaStream;
+
+  WrappedMediaStream? get localScreenshareStream => _localScreenshareStream;
+  WrappedMediaStream? _localScreenshareStream;
 
   CallParticipant? get localParticipant => voip.localParticipant;
 
-  /// userId:deviceId
-  List<CallParticipant> participants = [];
-  List<WrappedMediaStream> userMediaStreams = [];
-  List<WrappedMediaStream> screenshareStreams = [];
+  /// participant:volume
+  final Map<CallParticipant, double> _audioLevelsMap = {};
+  final List<CallSession> _callSessions = [];
+
+  List<CallParticipant> get participants => List.unmodifiable(_participants);
+  final List<CallParticipant> _participants = [];
+
+  List<WrappedMediaStream> get userMediaStreams =>
+      List.unmodifiable(_userMediaStreams);
+  final List<WrappedMediaStream> _userMediaStreams = [];
+
+  List<WrappedMediaStream> get screenShareStreams =>
+      List.unmodifiable(_screenshareStreams);
+  final List<WrappedMediaStream> _screenshareStreams = [];
+
   late String groupCallId;
 
-  GroupCallError? lastError;
-
-  Timer? activeSpeakerLoopTimeout;
-
-  Timer? resendMemberStateEventTimer;
-  Timer? memberLeaveEncKeyRotateDebounceTimer;
+  Timer? _activeSpeakerLoopTimeout;
+  Timer? _resendMemberStateEventTimer;
+  Timer? _memberLeaveEncKeyRotateDebounceTimer;
 
   final CachedStreamController<GroupCallSession> onGroupCallFeedsChanged =
       CachedStreamController();
@@ -91,7 +98,7 @@ class GroupCallSession {
   final CachedStreamController<WrappedMediaStream> onStreamRemoved =
       CachedStreamController();
 
-  bool get isLivekitCall => backends.first is LiveKitBackend;
+  bool get isLivekitCall => backend is LiveKitBackend;
 
   /// toggle e2ee setup and key sharing
   final bool enableE2EE;
@@ -101,7 +108,7 @@ class GroupCallSession {
     required this.client,
     required this.room,
     required this.voip,
-    required this.backends,
+    required this.backend,
     required this.enableE2EE,
     this.application = 'm.call',
     this.scope = 'm.room',
@@ -110,11 +117,11 @@ class GroupCallSession {
   }
 
   String get avatarName =>
-      getUser().calcDisplayname(mxidLocalPartFallback: false);
+      _getUser().calcDisplayname(mxidLocalPartFallback: false);
 
-  String? get displayName => getUser().displayName;
+  String? get displayName => _getUser().displayName;
 
-  User getUser() {
+  User _getUser() {
     return room.unsafeGetUserFromMemoryOrFallback(client.userID!);
   }
 
@@ -139,7 +146,7 @@ class GroupCallSession {
   }
 
   bool hasLocalParticipant() {
-    return participants.contains(localParticipant);
+    return _participants.contains(localParticipant);
   }
 
   Future<MediaStream> _getUserMedia(CallType type) async {
@@ -224,7 +231,7 @@ class GroupCallSession {
       localWrappedMediaStream = stream;
     }
 
-    localUserMediaStream = localWrappedMediaStream;
+    _localUserMediaStream = localWrappedMediaStream;
     await addUserMediaStream(localWrappedMediaStream);
 
     setState(GroupCallState.localCallFeedInitialized);
@@ -233,7 +240,7 @@ class GroupCallSession {
   }
 
   Future<void> updateMediaDeviceForCalls() async {
-    for (final call in callSessions) {
+    for (final call in _callSessions) {
       await call.updateMediaDeviceForCall();
     }
   }
@@ -260,19 +267,19 @@ class GroupCallSession {
 
     await sendMemberStateEvent();
 
-    activeSpeaker = null;
+    _activeSpeaker = null;
 
     setState(GroupCallState.entered);
 
     Logs().v('Entered group call $groupCallId');
 
-    // Set up participants for the members currently in the call.
+    // Set up _participants for the members currently in the call.
     // Other members will be picked up by the RoomState.members event.
 
     await onMemberStateChanged();
 
     if (!isLivekitCall) {
-      for (final call in callSessions) {
+      for (final call in _callSessions) {
         await onIncomingCall(call);
       }
 
@@ -289,27 +296,26 @@ class GroupCallSession {
   Future<void> dispose() async {
     if (localUserMediaStream != null) {
       await removeUserMediaStream(localUserMediaStream!);
-      localUserMediaStream = null;
+      _localUserMediaStream = null;
     }
 
     if (localScreenshareStream != null) {
       await stopMediaStream(localScreenshareStream!.stream);
       await removeScreenshareStream(localScreenshareStream!);
-      localScreenshareStream = null;
-      localDesktopCapturerSourceId = null;
+      _localScreenshareStream = null;
     }
 
     await removeMemberStateEvent();
 
-    // removeCall removes it from `callSessions` later.
-    final callsCopy = callSessions.toList();
+    // removeCall removes it from `_callSessions` later.
+    final callsCopy = _callSessions.toList();
 
     for (final call in callsCopy) {
-      await removeCall(call, CallErrorCode.user_hangup);
+      await removeCall(call, CallErrorCode.userHangup);
     }
 
-    activeSpeaker = null;
-    activeSpeakerLoopTimeout?.cancel();
+    _activeSpeaker = null;
+    _activeSpeakerLoopTimeout?.cancel();
     await _callSubscription?.cancel();
   }
 
@@ -317,7 +323,7 @@ class GroupCallSession {
     await dispose();
     setState(GroupCallState.localCallFeedUninitialized);
     voip.currentGroupCID = null;
-    participants.clear();
+    _participants.clear();
     // only remove our own, to save requesting if we join again, yes the other side
     // will send it anyway but welp
     encryptionKeysMap.remove(localParticipant!);
@@ -325,8 +331,8 @@ class GroupCallSession {
     _latestLocalKeyIndex = 0;
     voip.groupCalls.remove(VoipId(roomId: room.id, callId: groupCallId));
     await voip.delegate.handleGroupCallEnded(this);
-    resendMemberStateEventTimer?.cancel();
-    memberLeaveEncKeyRotateDebounceTimer?.cancel();
+    _resendMemberStateEventTimer?.cancel();
+    _memberLeaveEncKeyRotateDebounceTimer?.cancel();
     setState(GroupCallState.ended);
   }
 
@@ -356,7 +362,7 @@ class GroupCallSession {
       setTracksEnabled(localUserMediaStream!.stream!.getAudioTracks(), !muted);
     }
 
-    for (final call in callSessions) {
+    for (final call in _callSessions) {
       await call.setMicrophoneMuted(muted);
     }
 
@@ -374,7 +380,7 @@ class GroupCallSession {
       setTracksEnabled(localUserMediaStream!.stream!.getVideoTracks(), !muted);
     }
 
-    for (final call in callSessions) {
+    for (final call in _callSessions) {
       await call.setLocalVideoMuted(muted);
     }
 
@@ -405,8 +411,7 @@ class GroupCallSession {
         }
         Logs().v(
             'Screensharing permissions granted. Setting screensharing enabled on all calls');
-        localDesktopCapturerSourceId = desktopCapturerSourceId;
-        localScreenshareStream = WrappedMediaStream(
+        _localScreenshareStream = WrappedMediaStream(
           stream: stream,
           participant: localParticipant!,
           room: room,
@@ -422,7 +427,7 @@ class GroupCallSession {
         addScreenshareStream(localScreenshareStream!);
 
         onGroupCallEvent.add(GroupCallEvent.localScreenshareStateChanged);
-        for (final call in callSessions) {
+        for (final call in _callSessions) {
           await call.addLocalStream(
               await localScreenshareStream!.stream!.clone(),
               localScreenshareStream!.purpose);
@@ -433,20 +438,17 @@ class GroupCallSession {
         return true;
       } catch (e, s) {
         Logs().e('[VOIP] Enabling screensharing error', e, s);
-        lastError = GroupCallError(GroupCallErrorCode.user_media_failed,
-            'Failed to get screen-sharing stream: ', e);
         onGroupCallEvent.add(GroupCallEvent.error);
         return false;
       }
     } else {
-      for (final call in callSessions) {
+      for (final call in _callSessions) {
         await call.removeLocalStream(call.localScreenSharingStream!);
       }
 
       await stopMediaStream(localScreenshareStream?.stream);
       await removeScreenshareStream(localScreenshareStream!);
-      localScreenshareStream = null;
-      localDesktopCapturerSourceId = null;
+      _localScreenshareStream = null;
       //await sendMemberStateEvent();
       onGroupCallEvent.add(GroupCallEvent.localMuteStateChanged);
       return false;
@@ -514,7 +516,7 @@ class GroupCallSession {
         callId: groupCallId,
         application: application,
         scope: scope,
-        backends: backends,
+        backend: backend,
         deviceId: client.deviceID!,
         expiresTs: DateTime.now()
             .add(CallTimeouts.expireTsBumpDuration)
@@ -523,10 +525,10 @@ class GroupCallSession {
       ),
     );
 
-    if (resendMemberStateEventTimer != null) {
-      resendMemberStateEventTimer!.cancel();
+    if (_resendMemberStateEventTimer != null) {
+      _resendMemberStateEventTimer!.cancel();
     }
-    resendMemberStateEventTimer = Timer.periodic(
+    _resendMemberStateEventTimer = Timer.periodic(
         CallTimeouts.updateExpireTsTimerDuration, ((timer) async {
       Logs().d('sendMemberStateEvent updating member event with timer');
       if (state != GroupCallState.ended ||
@@ -539,10 +541,10 @@ class GroupCallSession {
   }
 
   Future<void> removeMemberStateEvent() {
-    if (resendMemberStateEventTimer != null) {
+    if (_resendMemberStateEventTimer != null) {
       Logs().d('resend member event timer cancelled');
-      resendMemberStateEventTimer!.cancel();
-      resendMemberStateEventTimer = null;
+      _resendMemberStateEventTimer!.cancel();
+      _resendMemberStateEventTimer = null;
     }
     return room.removeFamedlyCallMemberEvent(
       groupCallId,
@@ -552,7 +554,7 @@ class GroupCallSession {
     );
   }
 
-  /// compltetely rebuilds the local participants list
+  /// compltetely rebuilds the local _participants list
   Future<void> onMemberStateChanged() async {
     if (state != GroupCallState.entered) {
       Logs().d(
@@ -576,7 +578,7 @@ class GroupCallSession {
 
     for (final mem in ignoredMems) {
       Logs().w(
-          '[VOIP] Ignored ${mem.userId}\'s mem event ${mem.toJson()} while updating participants list for callId: $groupCallId, expiry status: ${mem.isExpired}');
+          '[VOIP] Ignored ${mem.userId}\'s mem event ${mem.toJson()} while updating _participants list for callId: $groupCallId, expiry status: ${mem.isExpired}');
     }
 
     final List<CallParticipant> newP = [];
@@ -613,10 +615,10 @@ class GroupCallSession {
       final existingCall = getCallForParticipant(rp);
       if (existingCall != null) {
         if (existingCall.remoteSessionId != mem.membershipId) {
-          await existingCall.hangup(reason: CallErrorCode.unknown_error);
+          await existingCall.hangup(reason: CallErrorCode.unknownError);
         } else {
           Logs().e(
-              '[VOIP] onMemberStateChanged Not updating participants list, already have a ongoing call with ${rp.id}');
+              '[VOIP] onMemberStateChanged Not updating _participants list, already have a ongoing call with ${rp.id}');
           continue;
         }
       }
@@ -648,14 +650,14 @@ class GroupCallSession {
       await addCall(newCall);
     }
     final newPcopy = List<CallParticipant>.from(newP);
-    final oldPcopy = List<CallParticipant>.from(participants);
+    final oldPcopy = List<CallParticipant>.from(_participants);
     final anyJoined = newPcopy.where((element) => !oldPcopy.contains(element));
     final anyLeft = oldPcopy.where((element) => !newPcopy.contains(element));
 
     if (anyJoined.isNotEmpty || anyLeft.isNotEmpty) {
       if (anyJoined.isNotEmpty) {
         Logs().d('anyJoined: ${anyJoined.map((e) => e.id).toString()}');
-        participants.addAll(anyJoined);
+        _participants.addAll(anyJoined);
 
         if (isLivekitCall && enableE2EE) {
           // ratcheting does not work on web, we just create a whole new key everywhere
@@ -670,17 +672,17 @@ class GroupCallSession {
         Logs().d('anyLeft: ${anyLeft.map((e) => e.id).toString()}');
 
         for (final leftp in anyLeft) {
-          participants.remove(leftp);
+          _participants.remove(leftp);
         }
 
         if (isLivekitCall && enableE2EE) {
           encryptionKeysMap.removeWhere((key, value) => anyLeft.contains(key));
 
           // debounce it because people leave at the same time
-          if (memberLeaveEncKeyRotateDebounceTimer != null) {
-            memberLeaveEncKeyRotateDebounceTimer!.cancel();
+          if (_memberLeaveEncKeyRotateDebounceTimer != null) {
+            _memberLeaveEncKeyRotateDebounceTimer!.cancel();
           }
-          memberLeaveEncKeyRotateDebounceTimer =
+          _memberLeaveEncKeyRotateDebounceTimer =
               Timer(CallTimeouts.makeKeyDelay, () async {
             await makeNewSenderKey(true);
           });
@@ -689,12 +691,12 @@ class GroupCallSession {
 
       onGroupCallEvent.add(GroupCallEvent.participantsChanged);
       Logs().d(
-          '[VOIP] onMemberStateChanged current list: ${participants.map((e) => e.id).toString()}');
+          '[VOIP] onMemberStateChanged current list: ${_participants.map((e) => e.id).toString()}');
     }
   }
 
   CallSession? getCallForParticipant(CallParticipant participant) {
-    return callSessions.singleWhereOrNull((call) =>
+    return _callSessions.singleWhereOrNull((call) =>
         call.groupCallId == groupCallId &&
         CallParticipant(
               userId: call.remoteUserId!,
@@ -705,7 +707,7 @@ class GroupCallSession {
   }
 
   Future<void> addCall(CallSession call) async {
-    callSessions.add(call);
+    _callSessions.add(call);
     await initCall(call);
     onGroupCallEvent.add(GroupCallEvent.callsChanged);
   }
@@ -713,14 +715,14 @@ class GroupCallSession {
   Future<void> replaceCall(
       CallSession existingCall, CallSession replacementCall) async {
     final existingCallIndex =
-        callSessions.indexWhere((element) => element == existingCall);
+        _callSessions.indexWhere((element) => element == existingCall);
 
     if (existingCallIndex == -1) {
       throw Exception('Couldn\'t find call to replace');
     }
 
-    callSessions.removeAt(existingCallIndex);
-    callSessions.add(replacementCall);
+    _callSessions.removeAt(existingCallIndex);
+    _callSessions.add(replacementCall);
 
     await disposeCall(existingCall, CallErrorCode.replaced);
     await initCall(replacementCall);
@@ -732,7 +734,7 @@ class GroupCallSession {
   Future<void> removeCall(CallSession call, CallErrorCode hangupReason) async {
     await disposeCall(call, hangupReason);
 
-    callSessions.removeWhere((element) => call.callId == element.callId);
+    _callSessions.removeWhere((element) => call.callId == element.callId);
 
     onGroupCallEvent.add(GroupCallEvent.callsChanged);
   }
@@ -891,7 +893,7 @@ class GroupCallSession {
   }
 
   WrappedMediaStream? getUserMediaStreamByParticipantId(String participantId) {
-    final stream = userMediaStreams
+    final stream = _userMediaStreams
         .where((stream) => stream.participant.id == participantId);
     if (stream.isNotEmpty) {
       return stream.first;
@@ -900,7 +902,7 @@ class GroupCallSession {
   }
 
   Future<void> addUserMediaStream(WrappedMediaStream stream) async {
-    userMediaStreams.add(stream);
+    _userMediaStreams.add(stream);
     //callFeed.measureVolumeActivity(true);
     onStreamAdd.add(stream);
     onGroupCallEvent.add(GroupCallEvent.userMediaStreamsChanged);
@@ -908,14 +910,14 @@ class GroupCallSession {
 
   Future<void> replaceUserMediaStream(WrappedMediaStream existingStream,
       WrappedMediaStream replacementStream) async {
-    final streamIndex = userMediaStreams.indexWhere(
+    final streamIndex = _userMediaStreams.indexWhere(
         (stream) => stream.participant.id == existingStream.participant.id);
 
     if (streamIndex == -1) {
       throw Exception('Couldn\'t find user media stream to replace');
     }
 
-    userMediaStreams.replaceRange(streamIndex, 1, [replacementStream]);
+    _userMediaStreams.replaceRange(streamIndex, 1, [replacementStream]);
 
     await existingStream.dispose();
     //replacementStream.measureVolumeActivity(true);
@@ -923,16 +925,16 @@ class GroupCallSession {
   }
 
   Future<void> removeUserMediaStream(WrappedMediaStream stream) async {
-    final streamIndex = userMediaStreams.indexWhere(
+    final streamIndex = _userMediaStreams.indexWhere(
         (element) => element.participant.id == stream.participant.id);
 
     if (streamIndex == -1) {
       throw Exception('Couldn\'t find user media stream to remove');
     }
 
-    userMediaStreams.removeWhere(
+    _userMediaStreams.removeWhere(
         (element) => element.participant.id == stream.participant.id);
-    audioLevelsMap.remove(stream.participant);
+    _audioLevelsMap.remove(stream.participant);
     onStreamRemoved.add(stream);
 
     if (stream.isLocal()) {
@@ -941,8 +943,8 @@ class GroupCallSession {
 
     onGroupCallEvent.add(GroupCallEvent.userMediaStreamsChanged);
 
-    if (activeSpeaker == stream.participant && userMediaStreams.isNotEmpty) {
-      activeSpeaker = userMediaStreams[0].participant;
+    if (_activeSpeaker == stream.participant && _userMediaStreams.isNotEmpty) {
+      _activeSpeaker = _userMediaStreams[0].participant;
       onGroupCallEvent.add(GroupCallEvent.activeSpeakerChanged);
     }
   }
@@ -951,7 +953,7 @@ class GroupCallSession {
     CallParticipant? nextActiveSpeaker;
     // idc about screen sharing atm.
     final userMediaStreamsCopyList =
-        List<WrappedMediaStream>.from(userMediaStreams);
+        List<WrappedMediaStream>.from(_userMediaStreams);
     for (final stream in userMediaStreamsCopyList) {
       if (stream.participant == localParticipant && stream.pc == null) {
         continue;
@@ -968,7 +970,7 @@ class GroupCallSession {
               element.values['kind'] == 'audio')
           ?.values['audioLevel'];
       if (otherPartyAudioLevel != null) {
-        audioLevelsMap[stream.participant] = otherPartyAudioLevel;
+        _audioLevelsMap[stream.participant] = otherPartyAudioLevel;
       }
 
       // https://www.w3.org/TR/webrtc-stats/#dom-rtcstatstype-media-source
@@ -980,32 +982,32 @@ class GroupCallSession {
           ?.values['audioLevel'];
       if (localParticipant != null &&
           ownAudioLevel != null &&
-          audioLevelsMap[localParticipant] != ownAudioLevel) {
-        audioLevelsMap[localParticipant!] = ownAudioLevel;
+          _audioLevelsMap[localParticipant] != ownAudioLevel) {
+        _audioLevelsMap[localParticipant!] = ownAudioLevel;
       }
     }
 
     double maxAudioLevel = double.negativeInfinity;
     // TODO: we probably want a threshold here?
-    audioLevelsMap.forEach((key, value) {
+    _audioLevelsMap.forEach((key, value) {
       if (value > maxAudioLevel) {
         nextActiveSpeaker = key;
         maxAudioLevel = value;
       }
     });
 
-    if (nextActiveSpeaker != null && activeSpeaker != nextActiveSpeaker) {
-      activeSpeaker = nextActiveSpeaker;
+    if (nextActiveSpeaker != null && _activeSpeaker != nextActiveSpeaker) {
+      _activeSpeaker = nextActiveSpeaker;
       onGroupCallEvent.add(GroupCallEvent.activeSpeakerChanged);
     }
-    activeSpeakerLoopTimeout?.cancel();
-    activeSpeakerLoopTimeout =
-        Timer(activeSpeakerInterval, onActiveSpeakerLoop);
+    _activeSpeakerLoopTimeout?.cancel();
+    _activeSpeakerLoopTimeout =
+        Timer(CallConstants.activeSpeakerInterval, onActiveSpeakerLoop);
   }
 
   WrappedMediaStream? getScreenshareStreamByParticipantId(
       String participantId) {
-    final stream = screenshareStreams
+    final stream = _screenshareStreams
         .where((stream) => stream.participant.id == participantId);
     if (stream.isNotEmpty) {
       return stream.first;
@@ -1014,35 +1016,35 @@ class GroupCallSession {
   }
 
   void addScreenshareStream(WrappedMediaStream stream) {
-    screenshareStreams.add(stream);
+    _screenshareStreams.add(stream);
     onStreamAdd.add(stream);
     onGroupCallEvent.add(GroupCallEvent.screenshareStreamsChanged);
   }
 
   Future<void> replaceScreenshareStream(WrappedMediaStream existingStream,
       WrappedMediaStream replacementStream) async {
-    final streamIndex = screenshareStreams.indexWhere(
+    final streamIndex = _screenshareStreams.indexWhere(
         (stream) => stream.participant.id == existingStream.participant.id);
 
     if (streamIndex == -1) {
       throw Exception('Couldn\'t find screenshare stream to replace');
     }
 
-    screenshareStreams.replaceRange(streamIndex, 1, [replacementStream]);
+    _screenshareStreams.replaceRange(streamIndex, 1, [replacementStream]);
 
     await existingStream.dispose();
     onGroupCallEvent.add(GroupCallEvent.screenshareStreamsChanged);
   }
 
   Future<void> removeScreenshareStream(WrappedMediaStream stream) async {
-    final streamIndex = screenshareStreams
+    final streamIndex = _screenshareStreams
         .indexWhere((stream) => stream.participant.id == stream.participant.id);
 
     if (streamIndex == -1) {
       throw Exception('Couldn\'t find screenshare stream to remove');
     }
 
-    screenshareStreams.removeWhere(
+    _screenshareStreams.removeWhere(
         (element) => element.participant.id == stream.participant.id);
 
     onStreamRemoved.add(stream);
@@ -1139,7 +1141,7 @@ class GroupCallSession {
   int _currentLocalKeyIndex = 0;
 
   /// sets incoming keys and also sends the key if it was for the local user
-  /// if sendTo is null, its sent to all participants, see `_sendEncryptionKeysEvent`
+  /// if sendTo is null, its sent to all _participants, see `_sendEncryptionKeysEvent`
   Future<void> _setEncryptionKey(
     CallParticipant participant,
     int encryptionKeyIndex,
@@ -1201,7 +1203,7 @@ class GroupCallSession {
     final myLatestKey = myKeys?[keyIndex];
 
     final sendKeysTo =
-        sendTo ?? participants.where((p) => p != localParticipant);
+        sendTo ?? _participants.where((p) => p != localParticipant);
 
     if (myKeys == null || myLatestKey == null) {
       Logs().w(
@@ -1304,7 +1306,7 @@ class GroupCallSession {
             mem.deviceId == deviceId &&
             !mem.isExpired &&
             // sanity checks
-            mem.backends.first.type == backends.first.type &&
+            mem.backend.type == backend.type &&
             mem.roomId == room.id &&
             mem.application == application)
         .isNotEmpty) {

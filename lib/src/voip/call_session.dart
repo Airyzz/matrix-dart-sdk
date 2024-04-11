@@ -21,6 +21,7 @@ import 'dart:core';
 import 'dart:math';
 
 import 'package:collection/collection.dart';
+import 'package:matrix/src/voip/utils/user_media_constraints.dart';
 import 'package:webrtc_interface/webrtc_interface.dart';
 
 import 'package:matrix/matrix.dart';
@@ -1221,17 +1222,9 @@ class CallSession {
 
   Future<MediaStream?> _getUserMedia(CallType type) async {
     final mediaConstraints = {
-      'audio': true,
+      'audio': UserMediaConstraints.micMediaConstraints,
       'video': type == CallType.kVideo
-          ? {
-              'mandatory': {
-                'minWidth': '640',
-                'minHeight': '480',
-                'minFrameRate': '30',
-              },
-              'facingMode': 'user',
-              'optional': [CallConstants.optionalAudioConfig],
-            }
+          ? UserMediaConstraints.camMediaConstraints
           : false,
     };
     try {
@@ -1243,12 +1236,9 @@ class CallSession {
   }
 
   Future<MediaStream?> _getDisplayMedia() async {
-    final mediaConstraints = {
-      'audio': false,
-      'video': true,
-    };
     try {
-      return await voip.delegate.mediaDevices.getDisplayMedia(mediaConstraints);
+      return await voip.delegate.mediaDevices
+          .getDisplayMedia(UserMediaConstraints.screenMediaConstraints);
     } catch (e) {
       await _getUserMediaFailed(e);
     }
@@ -1315,7 +1305,7 @@ class CallSession {
   Map<String, dynamic> _getOfferAnswerConstraints({bool iceRestart = false}) {
     return {
       'mandatory': {if (iceRestart) 'IceRestart': true},
-      'optional': [CallConstants.optionalAudioConfig],
+      'optional': [],
     };
   }
 

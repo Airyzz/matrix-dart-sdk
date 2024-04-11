@@ -128,12 +128,6 @@ class LiveKitBackend extends CallBackend {
     final encryptionKeys =
         _encryptionKeysMap[participant] ?? <int, Uint8List>{};
 
-    // if (encryptionKeys[encryptionKeyIndex] != null &&
-    //     listEquals(encryptionKeys[encryptionKeyIndex]!, keyBin)) {
-    //   Logs().i('[VOIP E2EE] Ignoring duplicate key');
-    //   return;
-    // }
-
     encryptionKeys[encryptionKeyIndex] = encryptionKeyBin;
     _encryptionKeysMap[participant] = encryptionKeys;
     if (participant.isLocal) {

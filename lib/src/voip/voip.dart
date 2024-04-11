@@ -50,6 +50,7 @@ class VoIP {
 
   CallParticipant? get localParticipant => client.isLogged()
       ? CallParticipant(
+          this,
           userId: client.userID!,
           deviceId: client.deviceID,
         )
@@ -284,12 +285,12 @@ class VoIP {
         await onAssertedIdentityReceived(room, content);
         break;
       case VoIPEventTypes.EncryptionKeysEvent:
-        await groupCallSession!
-            .onCallEncryption(room, remoteUserId, remoteDeviceId!, content);
+        await groupCallSession!.backend.onCallEncryption(
+            groupCallSession, remoteUserId, remoteDeviceId!, content);
         break;
       case VoIPEventTypes.RequestEncryptionKeysEvent:
-        await groupCallSession!.onCallEncryptionKeyRequest(
-            room, remoteUserId, remoteDeviceId!, content);
+        await groupCallSession!.backend.onCallEncryptionKeyRequest(
+            groupCallSession, remoteUserId, remoteDeviceId!, content);
         break;
     }
   }
@@ -303,7 +304,7 @@ class VoIP {
     }
     for (final groupCall in groupCalls.values) {
       if (groupCall.state == GroupCallState.entered) {
-        await groupCall.updateMediaDeviceForCalls();
+        await groupCall.backend.updateMediaDeviceForCalls();
       }
     }
   }
@@ -530,21 +531,6 @@ class VoIP {
     }
   }
 
-  // Future<void> onCallReplaces(Room room, Map<String, dynamic> content) async {
-  //   final String callId = content['call_id'];
-  //   Logs().d('onCallReplaces received for call ID $callId');
-
-  //   final call = calls[VoipId(roomId: room.id, callId: callId)];
-  //   if (call != null) {
-  //     if (call.room.id != room.id) {
-  //       Logs().w(
-  //           'Ignoring call replace for room ${room.id} claiming to be for call in room ${call.room.id}');
-  //       return;
-  //     }
-  //     //TODO: handle replaces
-  //   }
-  // }
-
   Future<void> onCallSelectAnswer(
       Room room, Map<String, dynamic> content) async {
     final String callId = content['call_id'];
@@ -718,9 +704,8 @@ class VoIP {
     Room room,
     CallBackend backend,
     String? application,
-    String? scope, {
-    bool enableE2EE = true,
-  }) async {
+    String? scope,
+  ) async {
     if (getGroupCallById(room.id, groupCallId) != null) {
       Logs().e('[VOIP] [$groupCallId] already exists.');
       return getGroupCallById(room.id, groupCallId)!;
@@ -734,7 +719,6 @@ class VoIP {
       backend: backend,
       application: application,
       scope: scope,
-      enableE2EE: enableE2EE,
     );
 
     setGroupCallById(groupCall);
@@ -755,9 +739,8 @@ class VoIP {
     Room room,
     CallBackend backend,
     String? application,
-    String? scope, {
-    bool enableE2EE = true,
-  }) async {
+    String? scope,
+  ) async {
     final groupCall = getGroupCallById(room.id, groupCallId);
 
     if (groupCall != null) {
@@ -780,7 +763,6 @@ class VoIP {
         backend,
         application,
         scope,
-        enableE2EE: enableE2EE,
       );
 
       return groupCall;
@@ -831,7 +813,6 @@ class VoIP {
       groupCallId: membership.callId,
       application: membership.application,
       scope: membership.scope,
-      enableE2EE: membership.backend is LiveKitBackend,
     );
 
     if (groupCalls.containsKey(

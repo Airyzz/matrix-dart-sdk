@@ -34,6 +34,7 @@ class CallMembership {
   final String deviceId;
   final int expiresTs;
   final String membershipId;
+  final List? feeds;
 
   final String roomId;
 
@@ -47,6 +48,7 @@ class CallMembership {
     required this.membershipId,
     this.application = 'm.call',
     this.scope = 'm.room',
+    this.feeds,
   });
 
   Map<String, dynamic> toJson() {
@@ -58,7 +60,8 @@ class CallMembership {
       'device_id': deviceId,
       'expires_ts': expiresTs,
       'expires': 7200000, // element compatibiltiy remove asap
-      'membershipID': membershipId // sessionId
+      'membershipID': membershipId, // sessionId
+      if (feeds != null) 'feeds': feeds,
     };
   }
 
@@ -77,6 +80,7 @@ class CallMembership {
         expiresTs: json['expires_ts'],
         membershipId:
             json['membershipID'] ?? 'someone_forgot_to_set_the_membershipID',
+        feeds: json['feeds'],
       );
     } catch (e, s) {
       Logs().e('[VOIP] call membership parsing failed. $json', e, s);

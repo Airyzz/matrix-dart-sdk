@@ -21,7 +21,6 @@ import 'dart:core';
 import 'dart:math';
 
 import 'package:collection/collection.dart';
-import 'package:matrix/src/voip/utils/user_media_constraints.dart';
 import 'package:webrtc_interface/webrtc_interface.dart';
 
 import 'package:matrix/matrix.dart';
@@ -29,6 +28,7 @@ import 'package:matrix/src/utils/cached_stream_controller.dart';
 import 'package:matrix/src/voip/models/call_options.dart';
 import 'package:matrix/src/voip/models/voip_id.dart';
 import 'package:matrix/src/voip/utils/stream_helper.dart';
+import 'package:matrix/src/voip/utils/user_media_constraints.dart';
 
 /// Parses incoming matrix events to the apropriate webrtc layer underneath using
 /// a `WebRTCDelegate`. This class is also responsible for sending any outgoing
@@ -327,14 +327,23 @@ class CallSession {
     await answer();
   }
 
-  Future<void> placeCallWithStreams(List<WrappedMediaStream> callFeeds) async {
+  Future<void> placeCallWithStreams(
+    List<WrappedMediaStream> callFeeds, {
+    bool requestScreenSharing = false,
+  }) async {
     // create the peer connection now so it can be gathering candidates while we get user
     // media (assuming a candidate pool size is configured)
     await _preparePeerConnection();
-    await gotCallFeedsForInvite(callFeeds);
+    await gotCallFeedsForInvite(
+      callFeeds,
+      requestScreenSharing: requestScreenSharing,
+    );
   }
 
-  Future<void> gotCallFeedsForInvite(List<WrappedMediaStream> callFeeds) async {
+  Future<void> gotCallFeedsForInvite(
+    List<WrappedMediaStream> callFeeds, {
+    bool requestScreenSharing = false,
+  }) async {
     if (successor != null) {
       await successor!.gotCallFeedsForAnswer(callFeeds);
       return;
@@ -348,9 +357,12 @@ class CallSession {
       await addLocalStream(await element.stream!.clone(), element.purpose);
     }
 
-    await pc!.addTransceiver(
-        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
-        init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly));
+    if (requestScreenSharing) {
+      await pc!.addTransceiver(
+          kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+          init:
+              RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly));
+    }
 
     setCallState(CallState.kCreateOffer);
 
@@ -649,6 +661,7 @@ class CallSession {
     } else {
       final newStream = WrappedMediaStream(
         participant: CallParticipant(
+          voip,
           userId: remoteUserId!,
           deviceId: remoteDeviceId,
         ),
@@ -1653,7 +1666,7 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallSDPStreamMetadataChangedPrefix,
+      EventTypes.CallSDPStreamMetadataChanged,
       content,
       txid: txid,
     );

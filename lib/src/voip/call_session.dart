@@ -101,15 +101,12 @@ class CallSession {
   String? remoteSessionId; // same
   String? remotePartyId; // random string
 
-  late CallParty hangupParty;
   CallErrorCode? hangupReason;
-  late CallError lastError;
-  CallSession? successor;
-  bool waitForLocalAVStream = false;
-  int toDeviceSeq = 0;
-  int candidateSendTries = 0;
+  CallSession? _successor;
+  int _toDeviceSeq = 0;
+  int _candidateSendTries = 0;
   bool get isGroupCall => groupCallId != null;
-  bool missedCall = true;
+  bool _missedCall = true;
 
   final CachedStreamController<CallSession> onCallStreamsChanged =
       CachedStreamController();
@@ -132,14 +129,21 @@ class CallSession {
   final CachedStreamController<WrappedMediaStream> onStreamRemoved =
       CachedStreamController();
 
-  SDPStreamMetadata? remoteSDPStreamMetadata;
-  List<RTCRtpSender> usermediaSenders = [];
-  List<RTCRtpSender> screensharingSenders = [];
-  List<WrappedMediaStream> streams = <WrappedMediaStream>[];
+  SDPStreamMetadata? _remoteSDPStreamMetadata;
+  final List<RTCRtpSender> _usermediaSenders = [];
+  final List<RTCRtpSender> _screensharingSenders = [];
+  final List<WrappedMediaStream> _streams = <WrappedMediaStream>[];
+
   List<WrappedMediaStream> get getLocalStreams =>
-      streams.where((element) => element.isLocal()).toList();
+      _streams.where((element) => element.isLocal()).toList();
   List<WrappedMediaStream> get getRemoteStreams =>
-      streams.where((element) => !element.isLocal()).toList();
+      _streams.where((element) => !element.isLocal()).toList();
+
+  bool get isLocalVideoMuted => localUserMediaStream?.isVideoMuted() ?? false;
+
+  bool get isMicrophoneMuted => localUserMediaStream?.isAudioMuted() ?? false;
+
+  bool get screensharingEnabled => localScreenSharingStream != null;
 
   WrappedMediaStream? get localUserMediaStream {
     final stream = getLocalStreams.where(
@@ -191,8 +195,8 @@ class CallSession {
             null;
   }
 
-  Timer? inviteTimer;
-  Timer? ringingTimer;
+  Timer? _inviteTimer;
+  Timer? _ringingTimer;
 
   // outgoing call
   Future<void> initOutboundCall(CallType type) async {
@@ -265,15 +269,15 @@ class CallSession {
 
     setCallState(CallState.kRinging);
 
-    ringingTimer = Timer(CallTimeouts.callInviteLifetime, () {
+    _ringingTimer = Timer(CallTimeouts.callInviteLifetime, () {
       if (state == CallState.kRinging) {
         Logs().v('[VOIP] Call invite has expired. Hanging up.');
-        hangupParty = CallParty.kRemote; // effectively
+
         fireCallEvent(CallEvent.kHangup);
         hangup(reason: CallErrorCode.inviteTimeout);
       }
-      ringingTimer?.cancel();
-      ringingTimer = null;
+      _ringingTimer?.cancel();
+      _ringingTimer = null;
     });
   }
 
@@ -286,13 +290,12 @@ class CallSession {
   Future<void> replacedBy(CallSession newCall) async {
     if (state == CallState.kWaitLocalMedia) {
       Logs().v('Telling new call to wait for local media');
-      newCall.waitForLocalAVStream = true;
     } else if (state == CallState.kCreateOffer ||
         state == CallState.kInviteSent) {
       Logs().v('Handing local stream to new call');
       await newCall.gotCallFeedsForAnswer(getLocalStreams);
     }
-    successor = newCall;
+    _successor = newCall;
     onCallReplaced.add(newCall);
     // ignore: unawaited_futures
     hangup(reason: CallErrorCode.replaced);
@@ -318,8 +321,6 @@ class CallSession {
   Future<void> gotCallFeedsForAnswer(List<WrappedMediaStream> callFeeds) async {
     if (state == CallState.kEnded) return;
 
-    waitForLocalAVStream = false;
-
     for (final element in callFeeds) {
       await addLocalStream(await element.stream!.clone(), element.purpose);
     }
@@ -344,8 +345,8 @@ class CallSession {
     List<WrappedMediaStream> callFeeds, {
     bool requestScreenSharing = false,
   }) async {
-    if (successor != null) {
-      await successor!.gotCallFeedsForAnswer(callFeeds);
+    if (_successor != null) {
+      await _successor!.gotCallFeedsForAnswer(callFeeds);
       return;
     }
     if (state == CallState.kEnded) {
@@ -449,18 +450,18 @@ class CallSession {
     await updateMediaDevice(
       voip.delegate,
       MediaKind.audio,
-      usermediaSenders,
+      _usermediaSenders,
     );
     await updateMediaDevice(
       voip.delegate,
       MediaKind.video,
-      usermediaSenders,
+      _usermediaSenders,
     );
   }
 
   void _updateRemoteSDPStreamMetadata(SDPStreamMetadata metadata) {
-    remoteSDPStreamMetadata = metadata;
-    remoteSDPStreamMetadata!.sdpStreamMetadatas
+    _remoteSDPStreamMetadata = metadata;
+    _remoteSDPStreamMetadata?.sdpStreamMetadatas
         .forEach((streamId, sdpStreamMetadata) {
       Logs().i(
           'Stream purpose update: \nid = "$streamId", \npurpose = "${sdpStreamMetadata.purpose}",  \naudio_muted = ${sdpStreamMetadata.audio_muted}, \nvideo_muted = ${sdpStreamMetadata.video_muted}');
@@ -533,8 +534,6 @@ class CallSession {
     fireCallEvent(CallEvent.kAssertedIdentityChanged);
   }
 
-  bool get screensharingEnabled => localScreenSharingStream != null;
-
   Future<bool> setScreensharingEnabled(bool enabled) async {
     // Skip if there is nothing to do
     if (enabled && localScreenSharingStream != null) {
@@ -567,13 +566,12 @@ class CallSession {
         return true;
       } catch (err) {
         fireCallEvent(CallEvent.kError);
-        lastError = CallError(CallErrorCode.userMediaFailed,
-            'Failed to get screen-sharing stream: ', err);
+
         return false;
       }
     } else {
       try {
-        for (final sender in screensharingSenders) {
+        for (final sender in _screensharingSenders) {
           await pc!.removeTrack(sender);
         }
         for (final track in localScreenSharingStream!.stream!.getTracks()) {
@@ -610,20 +608,20 @@ class CallSession {
         pc: pc,
         voip: voip,
       );
-      streams.add(newStream);
+      _streams.add(newStream);
       onStreamAdd.add(newStream);
     }
 
     if (addToPeerConnection) {
       if (purpose == SDPStreamMetadataPurpose.Screenshare) {
-        screensharingSenders.clear();
+        _screensharingSenders.clear();
         for (final track in stream.getTracks()) {
-          screensharingSenders.add(await pc!.addTrack(track, stream));
+          _screensharingSenders.add(await pc!.addTrack(track, stream));
         }
       } else if (purpose == SDPStreamMetadataPurpose.Usermedia) {
-        usermediaSenders.clear();
+        _usermediaSenders.clear();
         for (final track in stream.getTracks()) {
-          usermediaSenders.add(await pc!.addTrack(track, stream));
+          _usermediaSenders.add(await pc!.addTrack(track, stream));
         }
       }
     }
@@ -641,7 +639,7 @@ class CallSession {
 
   Future<void> _addRemoteStream(MediaStream stream) async {
     //final userId = remoteUser.id;
-    final metadata = remoteSDPStreamMetadata!.sdpStreamMetadatas[stream.id];
+    final metadata = _remoteSDPStreamMetadata?.sdpStreamMetadatas[stream.id];
     if (metadata == null) {
       Logs().i(
           'Ignoring stream with id ${stream.id} because we didn\'t get any metadata about it');
@@ -676,7 +674,7 @@ class CallSession {
         pc: pc,
         voip: voip,
       );
-      streams.add(newStream);
+      _streams.add(newStream);
       onStreamAdd.add(newStream);
     }
     fireCallEvent(CallEvent.kFeedsChanged);
@@ -684,37 +682,37 @@ class CallSession {
   }
 
   Future<void> deleteAllStreams() async {
-    for (final stream in streams) {
+    for (final stream in _streams) {
       if (stream.isLocal() || groupCallId == null) {
         await stream.dispose();
       }
     }
-    streams.clear();
+    _streams.clear();
     fireCallEvent(CallEvent.kFeedsChanged);
   }
 
   Future<void> deleteFeedByStream(MediaStream stream) async {
     final index =
-        streams.indexWhere((element) => element.stream!.id == stream.id);
+        _streams.indexWhere((element) => element.stream!.id == stream.id);
     if (index == -1) {
       Logs().w('Didn\'t find the feed with stream id ${stream.id} to delete');
       return;
     }
-    final wstream = streams.elementAt(index);
+    final wstream = _streams.elementAt(index);
     onStreamRemoved.add(wstream);
     await deleteStream(wstream);
   }
 
   Future<void> deleteStream(WrappedMediaStream stream) async {
     await stream.dispose();
-    streams.removeAt(streams.indexOf(stream));
+    _streams.removeAt(_streams.indexOf(stream));
     fireCallEvent(CallEvent.kFeedsChanged);
   }
 
   Future<void> removeLocalStream(WrappedMediaStream callFeed) async {
     final senderArray = callFeed.purpose == SDPStreamMetadataPurpose.Usermedia
-        ? usermediaSenders
-        : screensharingSenders;
+        ? _usermediaSenders
+        : _screensharingSenders;
 
     for (final element in senderArray) {
       await pc!.removeTrack(element);
@@ -740,7 +738,7 @@ class CallSession {
     if (!muted) {
       final videoToSend = await hasVideoToSend();
       if (!videoToSend) {
-        if (remoteSDPStreamMetadata == null) return;
+        if (_remoteSDPStreamMetadata == null) return;
         await insertVideoTrackToAudioOnlyStream();
       }
     }
@@ -810,14 +808,10 @@ class CallSession {
     }
   }
 
-  bool get isLocalVideoMuted => localUserMediaStream?.isVideoMuted() ?? false;
-
   Future<void> setMicrophoneMuted(bool muted) async {
     localUserMediaStream?.setAudioMuted(muted);
     await updateMuteStatus();
   }
-
-  bool get isMicrophoneMuted => localUserMediaStream?.isAudioMuted() ?? false;
 
   Future<void> setRemoteOnHold(bool onHold) async {
     if (remoteOnHold == onHold) return;
@@ -953,11 +947,11 @@ class CallSession {
     bool shouldEmit,
   ) async {
     Logs().d('[VOIP] terminating call');
-    inviteTimer?.cancel();
-    inviteTimer = null;
+    _inviteTimer?.cancel();
+    _inviteTimer = null;
 
-    ringingTimer?.cancel();
-    ringingTimer = null;
+    _ringingTimer?.cancel();
+    _ringingTimer = null;
 
     try {
       await voip.delegate.stopRingtone();
@@ -966,7 +960,6 @@ class CallSession {
       Logs().d('stopping ringtone failed ', e);
     }
 
-    hangupParty = party;
     hangupReason = reason;
 
     // don't see any reason to wrap this with shouldEmit atm,
@@ -989,7 +982,7 @@ class CallSession {
       onCallHangupNotifierForGroupCalls.add(this);
       await voip.delegate.handleCallEnded(this);
       fireCallEvent(CallEvent.kHangup);
-      if ((party == CallParty.kRemote && missedCall)) {
+      if ((party == CallParty.kRemote && _missedCall)) {
         await voip.delegate.handleMissedCall(this);
       }
     }
@@ -1064,12 +1057,12 @@ class CallSession {
 
       setCallState(CallState.kInviteSent);
 
-      inviteTimer = Timer(CallTimeouts.callInviteLifetime, () {
+      _inviteTimer = Timer(CallTimeouts.callInviteLifetime, () {
         if (state == CallState.kInviteSent) {
           hangup(reason: CallErrorCode.inviteTimeout);
         }
-        inviteTimer?.cancel();
-        inviteTimer = null;
+        _inviteTimer?.cancel();
+        _inviteTimer = null;
       });
     } else {
       await sendCallNegotiate(
@@ -1118,7 +1111,7 @@ class CallSession {
         // MSC2746 recommends these values (can be quite long when calling because the
         // callee will need a while to answer the call)
         final delay = direction == CallDirection.kIncoming ? 500 : 2000;
-        if (candidateSendTries == 0) {
+        if (_candidateSendTries == 0) {
           Timer(Duration(milliseconds: delay), () {
             _sendCandidateQueue();
           });
@@ -1150,7 +1143,7 @@ class CallSession {
           setCallState(CallState.kConnected);
           // fix any state/race issues we had with sdp packets and cloned streams
           await updateMuteStatus();
-          missedCall = false;
+          _missedCall = false;
         } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
           await hangup(reason: CallErrorCode.iceFailed);
         }
@@ -1167,10 +1160,10 @@ class CallSession {
 
   Future<void> cleanUp() async {
     try {
-      for (final stream in streams) {
+      for (final stream in _streams) {
         await stream.dispose();
       }
-      streams.clear();
+      _streams.clear();
     } catch (e, s) {
       Logs().e('[VOIP] cleaning up streams failed', e, s);
     }
@@ -1288,12 +1281,12 @@ class CallSession {
 
   Future<void> tryRemoveStopedStreams() async {
     final removedStreams = <String, WrappedMediaStream>{};
-    for (final stream in streams) {
+    for (final stream in _streams) {
       if (stream.stopped) {
         removedStreams[stream.stream!.id] = stream;
       }
     }
-    streams
+    _streams
         .removeWhere((stream) => removedStreams.containsKey(stream.stream!.id));
     for (final element in removedStreams.entries) {
       await _removeStream(element.value.stream!);
@@ -1303,13 +1296,13 @@ class CallSession {
   Future<void> _removeStream(MediaStream stream) async {
     Logs().v('Removing feed with stream id ${stream.id}');
 
-    final it = streams.where((element) => element.stream!.id == stream.id);
+    final it = _streams.where((element) => element.stream!.id == stream.id);
     if (it.isEmpty) {
       Logs().v('Didn\'t find the feed with stream id ${stream.id} to delete');
       return;
     }
     final wpstream = it.first;
-    streams.removeWhere((element) => element.stream!.id == stream.id);
+    _streams.removeWhere((element) => element.stream!.id == stream.id);
     onStreamRemoved.add(wpstream);
     fireCallEvent(CallEvent.kFeedsChanged);
     await wpstream.dispose();
@@ -1343,19 +1336,18 @@ class CallSession {
       }
     } catch (e) {
       Logs().v('[VOIP] sendCallCandidates e => ${e.toString()}');
-      candidateSendTries++;
+      _candidateSendTries++;
       _localCandidates.clear();
       _localCandidates.addAll(candidatesQueue);
 
-      if (candidateSendTries > 5) {
+      if (_candidateSendTries > 5) {
         Logs().d(
-            'Failed to send candidates on attempt $candidateSendTries Giving up on this call.');
-        lastError = CallError(CallErrorCode.iceTimeout, 'Signalling failed', e);
+            'Failed to send candidates on attempt $_candidateSendTries Giving up on this call.');
         await hangup(reason: CallErrorCode.iceTimeout);
         return;
       }
 
-      final delay = 500 * pow(2, candidateSendTries);
+      final delay = 500 * pow(2, _candidateSendTries);
       Timer(Duration(milliseconds: delay as int), () {
         _sendCandidateQueue();
       });
@@ -1390,18 +1382,13 @@ class CallSession {
   Future<void> _getLocalOfferFailed(dynamic err) async {
     Logs().e('Failed to get local offer ${err.toString()}');
     fireCallEvent(CallEvent.kError);
-    lastError = CallError(
-        CallErrorCode.localOfferFailed, 'Failed to get local offer!', err);
+
     await terminate(CallParty.kLocal, CallErrorCode.localOfferFailed, true);
   }
 
   Future<void> _getUserMediaFailed(dynamic err) async {
     Logs().w('Failed to get user media - ending call ${err.toString()}');
     fireCallEvent(CallEvent.kError);
-    lastError = CallError(
-        CallErrorCode.userMediaFailed,
-        'Couldn\'t start capturing media! Is your microphone set up and does this app have permission?',
-        err);
     await terminate(CallParty.kLocal, CallErrorCode.userMediaFailed, true);
   }
 
@@ -1733,7 +1720,7 @@ class CallSession {
     // opponentDeviceId is only set for a few events during group calls,
     // therefore only group calls use to-device messages for call events
     if (isGroupCall && remoteDeviceId != null) {
-      final toDeviceSeq = this.toDeviceSeq++;
+      final toDeviceSeq = _toDeviceSeq++;
       final Map<String, Object> data = {
         ...content,
         'seq': toDeviceSeq,

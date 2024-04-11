@@ -40,28 +40,10 @@ class MeshBackend extends CallBackend {
     };
   }
 
-  @override
-  bool get e2eeEnabled => false;
-
-  @override
-  CallParticipant? get activeSpeaker => _activeSpeaker;
   CallParticipant? _activeSpeaker;
-
-  @override
-  WrappedMediaStream? get localUserMediaStream => _localUserMediaStream;
   WrappedMediaStream? _localUserMediaStream;
-  @override
-  WrappedMediaStream? get localScreenshareStream => _localScreenshareStream;
   WrappedMediaStream? _localScreenshareStream;
-
-  @override
-  List<WrappedMediaStream> get userMediaStreams =>
-      List.unmodifiable(_userMediaStreams);
   final List<WrappedMediaStream> _userMediaStreams = [];
-
-  @override
-  List<WrappedMediaStream> get screenShareStreams =>
-      List.unmodifiable(_screenshareStreams);
   final List<WrappedMediaStream> _screenshareStreams = [];
 
   List<WrappedMediaStream> _getLocalStreams() {
@@ -76,67 +58,6 @@ class MeshBackend extends CallBackend {
     }
 
     return feeds;
-  }
-
-  @override
-  Future<void> updateMediaDeviceForCalls() async {
-    for (final call in _callSessions) {
-      await call.updateMediaDeviceForCall();
-    }
-  }
-
-  /// Initializes the local user media stream.
-  /// The media stream must be prepared before the group call enters.
-  /// if you allow the user to configure their camera and such ahead of time,
-  /// you can pass that `stream` on to this function.
-  /// This allows you to configure the camera before joining the call without
-  ///  having to reopen the stream and possibly losing settings.
-  @override
-  Future<WrappedMediaStream?> initLocalStream(GroupCallSession groupCall,
-      {WrappedMediaStream? stream}) async {
-    if (groupCall.state != GroupCallState.localCallFeedUninitialized) {
-      throw Exception(
-          'Cannot initialize local call feed in the ${groupCall.state} state.');
-    }
-
-    groupCall.setState(GroupCallState.initializingLocalCallFeed);
-
-    WrappedMediaStream localWrappedMediaStream;
-
-    if (stream == null) {
-      MediaStream stream;
-
-      try {
-        stream = await _getUserMedia(groupCall, CallType.kVideo);
-      } catch (error) {
-        groupCall.setState(GroupCallState.localCallFeedUninitialized);
-        rethrow;
-      }
-
-      localWrappedMediaStream = WrappedMediaStream(
-        stream: stream,
-        participant: groupCall.localParticipant!,
-        room: groupCall.room,
-        client: groupCall.client,
-        purpose: SDPStreamMetadataPurpose.Usermedia,
-        audioMuted: stream.getAudioTracks().isEmpty,
-        videoMuted: stream.getVideoTracks().isEmpty,
-        isWeb: groupCall.voip.delegate.isWeb,
-        isGroupCall: true,
-        voip: groupCall.voip,
-      );
-    } else {
-      localWrappedMediaStream = stream;
-    }
-
-    _localUserMediaStream = localWrappedMediaStream;
-    await _addUserMediaStream(groupCall, localWrappedMediaStream);
-
-    groupCall.setState(GroupCallState.localCallFeedInitialized);
-
-    _activeSpeaker = null;
-
-    return localWrappedMediaStream;
   }
 
   Future<MediaStream> _getUserMedia(
@@ -564,6 +485,87 @@ class MeshBackend extends CallBackend {
   }
 
   @override
+  bool get e2eeEnabled => false;
+
+  @override
+  CallParticipant? get activeSpeaker => _activeSpeaker;
+
+  @override
+  WrappedMediaStream? get localUserMediaStream => _localUserMediaStream;
+
+  @override
+  WrappedMediaStream? get localScreenshareStream => _localScreenshareStream;
+
+  @override
+  List<WrappedMediaStream> get userMediaStreams =>
+      List.unmodifiable(_userMediaStreams);
+
+  @override
+  List<WrappedMediaStream> get screenShareStreams =>
+      List.unmodifiable(_screenshareStreams);
+
+  @override
+  Future<void> updateMediaDeviceForCalls() async {
+    for (final call in _callSessions) {
+      await call.updateMediaDeviceForCall();
+    }
+  }
+
+  /// Initializes the local user media stream.
+  /// The media stream must be prepared before the group call enters.
+  /// if you allow the user to configure their camera and such ahead of time,
+  /// you can pass that `stream` on to this function.
+  /// This allows you to configure the camera before joining the call without
+  ///  having to reopen the stream and possibly losing settings.
+  @override
+  Future<WrappedMediaStream?> initLocalStream(GroupCallSession groupCall,
+      {WrappedMediaStream? stream}) async {
+    if (groupCall.state != GroupCallState.localCallFeedUninitialized) {
+      throw Exception(
+          'Cannot initialize local call feed in the ${groupCall.state} state.');
+    }
+
+    groupCall.setState(GroupCallState.initializingLocalCallFeed);
+
+    WrappedMediaStream localWrappedMediaStream;
+
+    if (stream == null) {
+      MediaStream stream;
+
+      try {
+        stream = await _getUserMedia(groupCall, CallType.kVideo);
+      } catch (error) {
+        groupCall.setState(GroupCallState.localCallFeedUninitialized);
+        rethrow;
+      }
+
+      localWrappedMediaStream = WrappedMediaStream(
+        stream: stream,
+        participant: groupCall.localParticipant!,
+        room: groupCall.room,
+        client: groupCall.client,
+        purpose: SDPStreamMetadataPurpose.Usermedia,
+        audioMuted: stream.getAudioTracks().isEmpty,
+        videoMuted: stream.getVideoTracks().isEmpty,
+        isWeb: groupCall.voip.delegate.isWeb,
+        isGroupCall: true,
+        voip: groupCall.voip,
+      );
+    } else {
+      localWrappedMediaStream = stream;
+    }
+
+    _localUserMediaStream = localWrappedMediaStream;
+    await _addUserMediaStream(groupCall, localWrappedMediaStream);
+
+    groupCall.setState(GroupCallState.localCallFeedInitialized);
+
+    _activeSpeaker = null;
+
+    return localWrappedMediaStream;
+  }
+
+  @override
   Future<void> setDeviceMuted(
       GroupCallSession groupCall, bool muted, MediaInputKind kind) async {
     if (!await hasMediaDevice(groupCall.voip.delegate, kind)) {
@@ -594,6 +596,52 @@ class MeshBackend extends CallBackend {
 
     groupCall.onGroupCallEvent.add(GroupCallEvent.localMuteStateChanged);
     return;
+  }
+
+  Future<void> _onIncomingCall(
+      GroupCallSession groupCall, CallSession newCall) async {
+    // The incoming calls may be for another room, which we will ignore.
+    if (newCall.room.id != groupCall.room.id) {
+      return;
+    }
+
+    if (newCall.state != CallState.kRinging) {
+      Logs().w('Incoming call no longer in ringing state. Ignoring.');
+      return;
+    }
+
+    if (newCall.groupCallId == null ||
+        newCall.groupCallId != groupCall.groupCallId) {
+      Logs().v(
+          'Incoming call with groupCallId ${newCall.groupCallId} ignored because it doesn\'t match the current group call');
+      await newCall.reject();
+      return;
+    }
+
+    final existingCall = _getCallForParticipant(
+      groupCall,
+      CallParticipant(
+        groupCall.voip,
+        userId: newCall.remoteUserId!,
+        deviceId: newCall.remoteDeviceId,
+      ),
+    );
+
+    if (existingCall != null && existingCall.callId == newCall.callId) {
+      return;
+    }
+
+    Logs().v(
+        'GroupCallSession: incoming call from: ${newCall.remoteUserId}${newCall.remoteDeviceId}${newCall.remotePartyId}');
+
+    // Check if the user calling has an existing call and use this call instead.
+    if (existingCall != null) {
+      await _replaceCall(groupCall, existingCall, newCall);
+    } else {
+      await _addCall(groupCall, newCall);
+    }
+
+    await newCall.answerWithStreams(_getLocalStreams());
   }
 
   @override
@@ -720,52 +768,6 @@ class MeshBackend extends CallBackend {
     );
 
     _onActiveSpeakerLoop(groupCall);
-  }
-
-  Future<void> _onIncomingCall(
-      GroupCallSession groupCall, CallSession newCall) async {
-    // The incoming calls may be for another room, which we will ignore.
-    if (newCall.room.id != groupCall.room.id) {
-      return;
-    }
-
-    if (newCall.state != CallState.kRinging) {
-      Logs().w('Incoming call no longer in ringing state. Ignoring.');
-      return;
-    }
-
-    if (newCall.groupCallId == null ||
-        newCall.groupCallId != groupCall.groupCallId) {
-      Logs().v(
-          'Incoming call with groupCallId ${newCall.groupCallId} ignored because it doesn\'t match the current group call');
-      await newCall.reject();
-      return;
-    }
-
-    final existingCall = _getCallForParticipant(
-      groupCall,
-      CallParticipant(
-        groupCall.voip,
-        userId: newCall.remoteUserId!,
-        deviceId: newCall.remoteDeviceId,
-      ),
-    );
-
-    if (existingCall != null && existingCall.callId == newCall.callId) {
-      return;
-    }
-
-    Logs().v(
-        'GroupCallSession: incoming call from: ${newCall.remoteUserId}${newCall.remoteDeviceId}${newCall.remotePartyId}');
-
-    // Check if the user calling has an existing call and use this call instead.
-    if (existingCall != null) {
-      await _replaceCall(groupCall, existingCall, newCall);
-    } else {
-      await _addCall(groupCall, newCall);
-    }
-
-    await newCall.answerWithStreams(_getLocalStreams());
   }
 
   @override

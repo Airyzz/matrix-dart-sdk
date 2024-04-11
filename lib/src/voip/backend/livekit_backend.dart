@@ -29,14 +29,16 @@ class LiveKitBackend extends CallBackend {
 
   int _indexCounter = 0;
 
-  @override
-  Map<String, Object?> toJson() {
-    return {
-      'type': type,
-      'livekit_service_url': livekitServiceUrl,
-      'livekit_alias': livekitAlias,
-    };
-  }
+  /// used to send the key again incase someone `onCallEncryptionKeyRequest` but don't just send
+  /// the last one because you also cycle back in your window which means you
+  /// could potentially end up sharing a past key
+  int get latestLocalKeyIndex => _latestLocalKeyIndex;
+  int _latestLocalKeyIndex = 0;
+
+  /// the key currently being used by the local cryptor, can possibly not be the latest
+  /// key, check `latestLocalKeyIndex` for latest key
+  int get currentLocalKeyIndex => _currentLocalKeyIndex;
+  int _currentLocalKeyIndex = 0;
 
   Map<int, Uint8List>? _getKeysForParticipant(CallParticipant participant) {
     return _encryptionKeysMap[participant];
@@ -111,17 +113,6 @@ class LiveKitBackend extends CallBackend {
       sendTo: sendTo,
     );
   }
-
-  /// used to send the key again incase someone `onCallEncryptionKeyRequest` but don't just send
-  /// the last one because you also cycle back in your window which means you
-  /// could potentially end up sharing a past key
-  int get latestLocalKeyIndex => _latestLocalKeyIndex;
-  int _latestLocalKeyIndex = 0;
-
-  /// the key currently being used by the local cryptor, can possibly not be the latest
-  /// key, check `latestLocalKeyIndex` for latest key
-  int get currentLocalKeyIndex => _currentLocalKeyIndex;
-  int _currentLocalKeyIndex = 0;
 
   /// sets incoming keys and also sends the key if it was for the local user
   /// if sendTo is null, its sent to all _participants, see `_sendEncryptionKeysEvent`
@@ -238,6 +229,66 @@ class LiveKitBackend extends CallBackend {
     }
   }
 
+  Future<void> _sendToDeviceEvent(
+    GroupCallSession groupCall,
+    List<CallParticipant> remoteParticipants,
+    Map<String, Object> data,
+    String eventType,
+  ) async {
+    Logs().v(
+        '[VOIP] _sendToDeviceEvent: sending ${data.toString()} to ${remoteParticipants.map((e) => e.id)} ');
+    final txid =
+        VoIP.customTxid ?? groupCall.client.generateUniqueTransactionId();
+    final mustEncrypt =
+        groupCall.room.encrypted && groupCall.client.encryptionEnabled;
+
+    // could just combine the two but do not want to rewrite the enc thingy
+    // wrappers here again.
+    final List<DeviceKeys> mustEncryptkeysToSendTo = [];
+    final Map<String, Map<String, Map<String, Object>>> unencryptedDataToSend =
+        {};
+
+    for (final participant in remoteParticipants) {
+      if (participant.deviceId == null) continue;
+      if (mustEncrypt) {
+        await groupCall.client.userDeviceKeysLoading;
+        final deviceKey = groupCall.client.userDeviceKeys[participant.userId]
+            ?.deviceKeys[participant.deviceId];
+        if (deviceKey != null) {
+          mustEncryptkeysToSendTo.add(deviceKey);
+        }
+      } else {
+        unencryptedDataToSend.addAll({
+          participant.userId: {participant.deviceId!: data}
+        });
+      }
+    }
+
+    // prepped data, now we send
+    if (mustEncrypt) {
+      await groupCall.client.sendToDeviceEncrypted(
+        mustEncryptkeysToSendTo,
+        eventType,
+        data,
+      );
+    } else {
+      await groupCall.client.sendToDevice(
+        eventType,
+        txid,
+        unencryptedDataToSend,
+      );
+    }
+  }
+
+  @override
+  Map<String, Object?> toJson() {
+    return {
+      'type': type,
+      'livekit_service_url': livekitServiceUrl,
+      'livekit_alias': livekitAlias,
+    };
+  }
+
   @override
   Future<void> requestEncrytionKey(
     GroupCallSession groupCall,
@@ -333,57 +384,6 @@ class LiveKitBackend extends CallBackend {
             deviceId: deviceId,
           )
         ],
-      );
-    }
-  }
-
-  Future<void> _sendToDeviceEvent(
-    GroupCallSession groupCall,
-    List<CallParticipant> remoteParticipants,
-    Map<String, Object> data,
-    String eventType,
-  ) async {
-    Logs().v(
-        '[VOIP] _sendToDeviceEvent: sending ${data.toString()} to ${remoteParticipants.map((e) => e.id)} ');
-    final txid =
-        VoIP.customTxid ?? groupCall.client.generateUniqueTransactionId();
-    final mustEncrypt =
-        groupCall.room.encrypted && groupCall.client.encryptionEnabled;
-
-    // could just combine the two but do not want to rewrite the enc thingy
-    // wrappers here again.
-    final List<DeviceKeys> mustEncryptkeysToSendTo = [];
-    final Map<String, Map<String, Map<String, Object>>> unencryptedDataToSend =
-        {};
-
-    for (final participant in remoteParticipants) {
-      if (participant.deviceId == null) continue;
-      if (mustEncrypt) {
-        await groupCall.client.userDeviceKeysLoading;
-        final deviceKey = groupCall.client.userDeviceKeys[participant.userId]
-            ?.deviceKeys[participant.deviceId];
-        if (deviceKey != null) {
-          mustEncryptkeysToSendTo.add(deviceKey);
-        }
-      } else {
-        unencryptedDataToSend.addAll({
-          participant.userId: {participant.deviceId!: data}
-        });
-      }
-    }
-
-    // prepped data, now we send
-    if (mustEncrypt) {
-      await groupCall.client.sendToDeviceEncrypted(
-        mustEncryptkeysToSendTo,
-        eventType,
-        data,
-      );
-    } else {
-      await groupCall.client.sendToDevice(
-        eventType,
-        txid,
-        unencryptedDataToSend,
       );
     }
   }

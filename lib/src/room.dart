@@ -1851,12 +1851,7 @@ class Room {
 
   /// if returned value is not null `org.matrix.msc3401.call.member` is present
   /// and group calls can be used
-  bool get groupCallsEnabled {
-    final powerLevelMap = getState(EventTypes.RoomPowerLevels)?.content;
-    if (powerLevelMap == null) return false;
-    return powerForChangingStateEvent(VoIPEventTypes.FamedlyCallMemberEvent) <=
-        getDefaultPowerLevel(powerLevelMap);
-  }
+  bool get groupCallsEnabled => canJoinGroupCall;
 
   /// sets the `org.matrix.msc3401.call.member` power level to users default for
   /// group calls, needs permissions to change power levels

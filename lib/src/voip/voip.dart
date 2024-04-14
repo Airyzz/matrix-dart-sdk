@@ -167,11 +167,15 @@ class VoIP {
 
     if (event is Event) {
       room = event.room;
+
+      /// this can also be sent in p2p calls when they want to call a specific device
+      remoteDeviceId = event.content.tryGet<String>('invitee_device_id');
     } else if (event is ToDeviceEvent) {
       final roomId = event.content.tryGet<String>('room_id');
       final confId = event.content.tryGet<String>('conf_id');
-      remoteDeviceId = event.content.tryGet<String>(
-          'device_id'); // to-device events specifically, m.call.invite and encryption key sending and requesting
+
+      /// to-device events specifically, m.call.invite and encryption key sending and requesting
+      remoteDeviceId = event.content.tryGet<String>('device_id');
 
       if (roomId != null && confId != null) {
         room = client.getRoomById(roomId);
@@ -651,16 +655,12 @@ class VoIP {
   ///
   /// For p2p call, you want to have all the devices of the specified `userId` ring
   Future<CallSession> inviteToCall(
-    String roomId,
+    Room room,
     CallType type, {
     String? userId,
     String? deviceId,
   }) async {
-    final room = client.getRoomById(roomId);
-    if (room == null) {
-      Logs().v('[VOIP] Invalid room id [$roomId].');
-      return Null as CallSession;
-    }
+    final roomId = room.id;
     final callId = genCallID();
     if (currentGroupCID == null) {
       incomingCallRoomId[roomId] = callId;

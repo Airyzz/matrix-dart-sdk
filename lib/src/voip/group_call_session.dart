@@ -36,7 +36,11 @@ class GroupCallSession {
   /// is a list of backend to allow passing multiple backend in the future
   /// we use the first backend everywhere as of now
   final CallBackend backend;
+
+  /// something like normal calls or thirdroom
   final String? application;
+
+  /// either room scoped or user scoped calls
   final String? scope;
 
   GroupCallState state = GroupCallState.localCallFeedUninitialized;
@@ -46,7 +50,7 @@ class GroupCallSession {
   List<CallParticipant> get participants => List.unmodifiable(_participants);
   final List<CallParticipant> _participants = [];
 
-  late String groupCallId;
+  String groupCallId;
 
   final CachedStreamController<GroupCallState> onGroupCallState =
       CachedStreamController();
@@ -56,17 +60,34 @@ class GroupCallSession {
 
   Timer? _resendMemberStateEventTimer;
 
-  GroupCallSession({
+  factory GroupCallSession.withAutoGenId(
+    Room room,
+    VoIP voip,
+    CallBackend backend,
+    String? application,
+    String? scope,
     String? groupCallId,
+  ) {
+    return GroupCallSession(
+      client: room.client,
+      room: room,
+      voip: voip,
+      backend: backend,
+      application: application ?? 'm.call',
+      scope: scope ?? 'm.room',
+      groupCallId: groupCallId ?? genCallID(),
+    );
+  }
+
+  GroupCallSession({
     required this.client,
     required this.room,
     required this.voip,
     required this.backend,
-    this.application = 'm.call',
-    this.scope = 'm.room',
-  }) {
-    this.groupCallId = groupCallId ?? genCallID();
-  }
+    required this.groupCallId,
+    required this.application,
+    required this.scope,
+  });
 
   String get avatarName =>
       _getUser().calcDisplayname(mxidLocalPartFallback: false);

@@ -405,7 +405,7 @@ void main() {
     test('Glare after invite was sent', () async {
       expect(voip.currentCID, null);
       final firstCall = await voip.inviteToCall(
-        room.id,
+        room,
         CallType.kVoice,
         userId: '@alice:testing.com',
       );
@@ -441,7 +441,7 @@ void main() {
     test('Glare before invite was sent', () async {
       expect(voip.currentCID, null);
       final firstCall = await voip.inviteToCall(
-        room.id,
+        room,
         CallType.kVoice,
         userId: '@alice:testing.com',
       );

@@ -6,10 +6,9 @@ Supports
   - mesh webrtc calls
   - just handling state of calls and signallnig for e2ee keys in sfu mode (check `isLivekitCall`)
 
-// TODO: update docs if reviews go through
-- added invitee_device_id
-- call backends just use the first one atm
-- 3401 to-device events MUST contain a room id
+Places where we diverted from spec afaik:
+- To enable p2p calls between devices of the same user, pass a `invitee_device_id` to the `m.call.invite` method
+- **to-device call events such as in msc3401 MUST `room_id` to map the event to a room**
 
 ## Overview
 
@@ -23,7 +22,7 @@ Supports
 
 All communication for group calls happens over to-device events except the `com.famedly.call.member` event.
 
-**To-device events must have a `party_id` or a `sender_session_id` set to the device id of the sender, this is partly attributed to making it easy to maintain all the kinds of calls and supporting calling between 2 devices of the same user.**
+
 
 Sends the `com.famedly.call.member` event to signal an active membership. The format has to be the following:
 

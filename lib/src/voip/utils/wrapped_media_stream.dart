@@ -16,7 +16,6 @@ class WrappedMediaStream {
   bool audioMuted;
   bool videoMuted;
   final Client client;
-  final bool isWeb;
   final bool isGroupCall;
   final RTCPeerConnection? pc;
 
@@ -40,12 +39,13 @@ class WrappedMediaStream {
     required this.client,
     required this.audioMuted,
     required this.videoMuted,
-    required this.isWeb,
     required this.isGroupCall,
     required this.voip,
   });
 
   String get id => '${stream?.id}: $title';
+
+  bool get isWeb => bool.fromEnvironment('dart.library.js_util');
 
   Future<void> dispose() async {
     /// libwebrtc does not provide a way to clone MediaStreams. So stopping the

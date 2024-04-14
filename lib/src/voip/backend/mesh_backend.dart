@@ -547,7 +547,6 @@ class MeshBackend extends CallBackend {
         purpose: SDPStreamMetadataPurpose.Usermedia,
         audioMuted: stream.getAudioTracks().isEmpty,
         videoMuted: stream.getVideoTracks().isEmpty,
-        isWeb: groupCall.voip.delegate.isWeb,
         isGroupCall: true,
         voip: groupCall.voip,
       );
@@ -675,7 +674,6 @@ class MeshBackend extends CallBackend {
           purpose: SDPStreamMetadataPurpose.Screenshare,
           audioMuted: stream.getAudioTracks().isEmpty,
           videoMuted: stream.getVideoTracks().isEmpty,
-          isWeb: groupCall.voip.delegate.isWeb,
           isGroupCall: true,
           voip: groupCall.voip,
         );

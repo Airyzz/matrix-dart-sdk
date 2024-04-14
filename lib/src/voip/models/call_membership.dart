@@ -56,7 +56,7 @@ class CallMembership {
       'call_id': callId,
       'application': application,
       'scope': scope,
-      'foci_active': [backend],
+      'foci_active': [backend.toJson()],
       'device_id': deviceId,
       'expires_ts': expiresTs,
       'expires': 7200000, // element compatibiltiy remove asap

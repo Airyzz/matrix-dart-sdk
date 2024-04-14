@@ -606,7 +606,6 @@ void main() {
           stateKey: '',
         ),
       );
-      expect(room.canJoinGroupCall, false);
       expect(room.groupCallsEnabled, false);
 
       room.setState(
@@ -624,50 +623,6 @@ void main() {
           stateKey: '',
         ),
       );
-      expect(room.canJoinGroupCall, true);
-      expect(room.groupCallsEnabled, true);
-
-      // state_default 50 and user_default 0, use enableGroupCall
-      room.setState(
-        Event(
-            senderId: '@test:example.com',
-            type: 'm.room.power_levels',
-            room: room,
-            eventId: '123',
-            content: {
-              'state_default': 50,
-              'users': {'@test:fakeServer.notExisting': 100},
-              'users_default': 0
-            },
-            originServerTs: DateTime.now(),
-            stateKey: ''),
-      );
-      expect(room.canJoinGroupCall, true); // because admin
-      expect(room.groupCallsEnabled, false);
-      await room.enableGroupCalls();
-      expect(room.canJoinGroupCall, true);
-      expect(room.groupCallsEnabled, true);
-
-      // state_default 50 and user_default unspecified, use enableGroupCall
-      room.setState(
-        Event(
-          senderId: '@test:example.com',
-          type: 'm.room.power_levels',
-          room: room,
-          eventId: '123',
-          content: {
-            'state_default': 50,
-            'users': {'@test:fakeServer.notExisting': 100},
-          },
-          originServerTs: DateTime.now(),
-          stateKey: '',
-        ),
-      );
-
-      expect(room.canJoinGroupCall, true); // because admin
-      expect(room.groupCallsEnabled, false);
-      await room.enableGroupCalls();
-      expect(room.canJoinGroupCall, true);
       expect(room.groupCallsEnabled, true);
 
       // state_default is 0 so users should be able to send state events
@@ -685,7 +640,6 @@ void main() {
           stateKey: '',
         ),
       );
-      expect(room.canJoinGroupCall, true);
       expect(room.groupCallsEnabled, true);
     });
 

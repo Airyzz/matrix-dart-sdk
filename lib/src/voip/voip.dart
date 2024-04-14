@@ -744,7 +744,7 @@ class VoIP {
     final groupCall = getGroupCallById(room.id, groupCallId);
 
     if (groupCall != null) {
-      if (!room.canJoinGroupCall) {
+      if (!room.groupCallsEnabled) {
         throw Exception(
             'User is not allowed to join famedly calls in the room');
       }
@@ -755,7 +755,7 @@ class VoIP {
       await room.enableGroupCalls();
     }
 
-    if (room.canJoinGroupCall) {
+    if (room.groupCallsEnabled) {
       // The call doesn't exist, but we can create it
       final groupCall = await _newGroupCall(
         groupCallId,

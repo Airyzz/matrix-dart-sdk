@@ -100,7 +100,7 @@ class CallError extends Error {
   }
 }
 
-enum CallEvent {
+enum CallStateChange {
   /// The call was hangup by the local|remote user.
   kHangup,
 
@@ -162,7 +162,7 @@ class GroupCallError extends Error {
   }
 }
 
-enum GroupCallEvent {
+enum GroupCallStateChange {
   groupCallStateChanged,
   activeSpeakerChanged,
   callsChanged,

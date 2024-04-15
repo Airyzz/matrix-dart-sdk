@@ -107,7 +107,7 @@ class MeshBackend extends CallBackend {
   Future<void> _addCall(GroupCallSession groupCall, CallSession call) async {
     _callSessions.add(call);
     await _initCall(groupCall, call);
-    groupCall.onGroupCallEvent.add(GroupCallEvent.callsChanged);
+    groupCall.onGroupCallEvent.add(GroupCallStateChange.callsChanged);
   }
 
   /// init a peer call from group calls.
@@ -165,7 +165,7 @@ class MeshBackend extends CallBackend {
     await _disposeCall(groupCall, existingCall, CallErrorCode.replaced);
     await _initCall(groupCall, replacementCall);
 
-    groupCall.onGroupCallEvent.add(GroupCallEvent.callsChanged);
+    groupCall.onGroupCallEvent.add(GroupCallStateChange.callsChanged);
   }
 
   /// Removes a peer call from group calls.
@@ -175,7 +175,7 @@ class MeshBackend extends CallBackend {
 
     _callSessions.removeWhere((element) => call.callId == element.callId);
 
-    groupCall.onGroupCallEvent.add(GroupCallEvent.callsChanged);
+    groupCall.onGroupCallEvent.add(GroupCallStateChange.callsChanged);
   }
 
   Future<void> _disposeCall(GroupCallSession groupCall, CallSession call,
@@ -336,7 +336,7 @@ class MeshBackend extends CallBackend {
 
     if (nextActiveSpeaker != null && _activeSpeaker != nextActiveSpeaker) {
       _activeSpeaker = nextActiveSpeaker;
-      groupCall.onGroupCallEvent.add(GroupCallEvent.activeSpeakerChanged);
+      groupCall.onGroupCallEvent.add(GroupCallStateChange.activeSpeakerChanged);
     }
     _activeSpeakerLoopTimeout?.cancel();
     _activeSpeakerLoopTimeout = Timer(
@@ -359,7 +359,8 @@ class MeshBackend extends CallBackend {
       GroupCallSession groupCall, WrappedMediaStream stream) {
     _screenshareStreams.add(stream);
     onStreamAdd.add(stream);
-    groupCall.onGroupCallEvent.add(GroupCallEvent.screenshareStreamsChanged);
+    groupCall.onGroupCallEvent
+        .add(GroupCallStateChange.screenshareStreamsChanged);
   }
 
   Future<void> _replaceScreenshareStream(
@@ -377,7 +378,8 @@ class MeshBackend extends CallBackend {
     _screenshareStreams.replaceRange(streamIndex, 1, [replacementStream]);
 
     await existingStream.dispose();
-    groupCall.onGroupCallEvent.add(GroupCallEvent.screenshareStreamsChanged);
+    groupCall.onGroupCallEvent
+        .add(GroupCallStateChange.screenshareStreamsChanged);
   }
 
   Future<void> _removeScreenshareStream(
@@ -400,7 +402,8 @@ class MeshBackend extends CallBackend {
       await stopMediaStream(stream.stream);
     }
 
-    groupCall.onGroupCallEvent.add(GroupCallEvent.screenshareStreamsChanged);
+    groupCall.onGroupCallEvent
+        .add(GroupCallStateChange.screenshareStreamsChanged);
   }
 
   Future<void> _onCallStateChanged(CallSession call, CallState state) async {
@@ -435,7 +438,8 @@ class MeshBackend extends CallBackend {
   ) async {
     _userMediaStreams.add(stream);
     onStreamAdd.add(stream);
-    groupCall.onGroupCallEvent.add(GroupCallEvent.userMediaStreamsChanged);
+    groupCall.onGroupCallEvent
+        .add(GroupCallStateChange.userMediaStreamsChanged);
   }
 
   Future<void> _replaceUserMediaStream(
@@ -453,7 +457,8 @@ class MeshBackend extends CallBackend {
     _userMediaStreams.replaceRange(streamIndex, 1, [replacementStream]);
 
     await existingStream.dispose();
-    groupCall.onGroupCallEvent.add(GroupCallEvent.userMediaStreamsChanged);
+    groupCall.onGroupCallEvent
+        .add(GroupCallStateChange.userMediaStreamsChanged);
   }
 
   Future<void> _removeUserMediaStream(
@@ -476,11 +481,12 @@ class MeshBackend extends CallBackend {
       await stopMediaStream(stream.stream);
     }
 
-    groupCall.onGroupCallEvent.add(GroupCallEvent.userMediaStreamsChanged);
+    groupCall.onGroupCallEvent
+        .add(GroupCallStateChange.userMediaStreamsChanged);
 
     if (_activeSpeaker == stream.participant && _userMediaStreams.isNotEmpty) {
       _activeSpeaker = _userMediaStreams[0].participant;
-      groupCall.onGroupCallEvent.add(GroupCallEvent.activeSpeakerChanged);
+      groupCall.onGroupCallEvent.add(GroupCallStateChange.activeSpeakerChanged);
     }
   }
 
@@ -593,7 +599,7 @@ class MeshBackend extends CallBackend {
       }
     }
 
-    groupCall.onGroupCallEvent.add(GroupCallEvent.localMuteStateChanged);
+    groupCall.onGroupCallEvent.add(GroupCallStateChange.localMuteStateChanged);
     return;
   }
 
@@ -681,7 +687,7 @@ class MeshBackend extends CallBackend {
         _addScreenshareStream(groupCall, localScreenshareStream!);
 
         groupCall.onGroupCallEvent
-            .add(GroupCallEvent.localScreenshareStateChanged);
+            .add(GroupCallStateChange.localScreenshareStateChanged);
         for (final call in _callSessions) {
           await call.addLocalStream(
               await localScreenshareStream!.stream!.clone(),
@@ -693,7 +699,7 @@ class MeshBackend extends CallBackend {
         return;
       } catch (e, s) {
         Logs().e('[VOIP] Enabling screensharing error', e, s);
-        groupCall.onGroupCallEvent.add(GroupCallEvent.error);
+        groupCall.onGroupCallEvent.add(GroupCallStateChange.error);
         return;
       }
     } else {
@@ -706,7 +712,8 @@ class MeshBackend extends CallBackend {
 
       await groupCall.sendMemberStateEvent();
 
-      groupCall.onGroupCallEvent.add(GroupCallEvent.localMuteStateChanged);
+      groupCall.onGroupCallEvent
+          .add(GroupCallStateChange.localMuteStateChanged);
       return;
     }
   }

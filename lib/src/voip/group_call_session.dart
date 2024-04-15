@@ -55,7 +55,7 @@ class GroupCallSession {
   final CachedStreamController<GroupCallState> onGroupCallState =
       CachedStreamController();
 
-  final CachedStreamController<GroupCallEvent> onGroupCallEvent =
+  final CachedStreamController<GroupCallStateChange> onGroupCallEvent =
       CachedStreamController();
 
   Timer? _resendMemberStateEventTimer;
@@ -101,7 +101,7 @@ class GroupCallSession {
   void setState(GroupCallState newState) {
     state = newState;
     onGroupCallState.add(newState);
-    onGroupCallEvent.add(GroupCallEvent.groupCallStateChanged);
+    onGroupCallEvent.add(GroupCallStateChange.groupCallStateChanged);
   }
 
   bool hasLocalParticipant() {
@@ -264,7 +264,7 @@ class GroupCallSession {
         await backend.onLeftParticipant(this, anyLeft.toList());
       }
 
-      onGroupCallEvent.add(GroupCallEvent.participantsChanged);
+      onGroupCallEvent.add(GroupCallStateChange.participantsChanged);
       Logs().d(
           '[VOIP] onMemberStateChanged current list: ${_participants.map((e) => e.id).toString()}');
     }

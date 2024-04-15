@@ -120,7 +120,7 @@ class CallSession {
   final CachedStreamController<CallState> onCallStateChanged =
       CachedStreamController();
 
-  final CachedStreamController<CallEvent> onCallEventChanged =
+  final CachedStreamController<CallStateChange> onCallEventChanged =
       CachedStreamController();
 
   final CachedStreamController<WrappedMediaStream> onStreamAdd =
@@ -273,7 +273,7 @@ class CallSession {
       if (state == CallState.kRinging) {
         Logs().v('[VOIP] Call invite has expired. Hanging up.');
 
-        fireCallEvent(CallEvent.kHangup);
+        fireCallEvent(CallStateChange.kHangup);
         hangup(reason: CallErrorCode.inviteTimeout);
       }
       _ringingTimer?.cancel();
@@ -442,7 +442,7 @@ class CallSession {
     final newLocalOnHold = await isLocalOnHold();
     if (prevLocalOnHold != newLocalOnHold) {
       _localHold = newLocalOnHold;
-      fireCallEvent(CallEvent.kLocalHoldUnhold);
+      fireCallEvent(CallStateChange.kLocalHoldUnhold);
     }
   }
 
@@ -478,14 +478,14 @@ class CallSession {
       } else {
         Logs().i('Not found purpose for remote stream $streamId, remove it?');
         wpstream.stopped = true;
-        fireCallEvent(CallEvent.kFeedsChanged);
+        fireCallEvent(CallStateChange.kFeedsChanged);
       }
     }
   }
 
   Future<void> onSDPStreamMetadataReceived(SDPStreamMetadata metadata) async {
     _updateRemoteSDPStreamMetadata(metadata);
-    fireCallEvent(CallEvent.kFeedsChanged);
+    fireCallEvent(CallStateChange.kFeedsChanged);
   }
 
   Future<void> onCandidatesReceived(List<dynamic> candidates) async {
@@ -531,7 +531,7 @@ class CallSession {
 
   void onAssertedIdentityReceived(AssertedIdentity identity) {
     _remoteAssertedIdentity = identity;
-    fireCallEvent(CallEvent.kAssertedIdentityChanged);
+    fireCallEvent(CallStateChange.kAssertedIdentityChanged);
   }
 
   Future<bool> setScreensharingEnabled(bool enabled) async {
@@ -565,7 +565,7 @@ class CallSession {
         await addLocalStream(stream, SDPStreamMetadataPurpose.Screenshare);
         return true;
       } catch (err) {
-        fireCallEvent(CallEvent.kError);
+        fireCallEvent(CallStateChange.kError);
 
         return false;
       }
@@ -579,7 +579,7 @@ class CallSession {
         }
         localScreenSharingStream!.stopped = true;
         await _removeStream(localScreenSharingStream!.stream!);
-        fireCallEvent(CallEvent.kFeedsChanged);
+        fireCallEvent(CallStateChange.kFeedsChanged);
         return false;
       } catch (e, s) {
         Logs().e('[VOIP] stopping screen sharing track failed', e, s);
@@ -633,7 +633,7 @@ class CallSession {
       }
     }
 
-    fireCallEvent(CallEvent.kFeedsChanged);
+    fireCallEvent(CallStateChange.kFeedsChanged);
   }
 
   Future<void> _addRemoteStream(MediaStream stream) async {
@@ -675,7 +675,7 @@ class CallSession {
       _streams.add(newStream);
       onStreamAdd.add(newStream);
     }
-    fireCallEvent(CallEvent.kFeedsChanged);
+    fireCallEvent(CallStateChange.kFeedsChanged);
     Logs().i('Pushed remote stream (id="${stream.id}", purpose=$purpose)');
   }
 
@@ -686,7 +686,7 @@ class CallSession {
       }
     }
     _streams.clear();
-    fireCallEvent(CallEvent.kFeedsChanged);
+    fireCallEvent(CallStateChange.kFeedsChanged);
   }
 
   Future<void> deleteFeedByStream(MediaStream stream) async {
@@ -704,7 +704,7 @@ class CallSession {
   Future<void> deleteStream(WrappedMediaStream stream) async {
     await stream.dispose();
     _streams.removeAt(_streams.indexOf(stream));
-    fireCallEvent(CallEvent.kFeedsChanged);
+    fireCallEvent(CallStateChange.kFeedsChanged);
   }
 
   Future<void> removeLocalStream(WrappedMediaStream callFeed) async {
@@ -729,7 +729,7 @@ class CallSession {
   void setCallState(CallState newState) {
     _state = newState;
     onCallStateChanged.add(newState);
-    fireCallEvent(CallEvent.kState);
+    fireCallEvent(CallStateChange.kState);
   }
 
   Future<void> setLocalVideoMuted(bool muted) async {
@@ -821,7 +821,7 @@ class CallSession {
           : TransceiverDirection.SendRecv);
     }
     await updateMuteStatus();
-    fireCallEvent(CallEvent.kRemoteHoldUnhold);
+    fireCallEvent(CallStateChange.kRemoteHoldUnhold);
   }
 
   Future<bool> isLocalOnHold() async {
@@ -979,7 +979,7 @@ class CallSession {
     if (shouldEmit) {
       onCallHangupNotifierForGroupCalls.add(this);
       await voip.delegate.handleCallEnded(this);
-      fireCallEvent(CallEvent.kHangup);
+      fireCallEvent(CallStateChange.kHangup);
       if ((party == CallParty.kRemote && _missedCall)) {
         await voip.delegate.handleMissedCall(this);
       }
@@ -1302,7 +1302,7 @@ class CallSession {
     final wpstream = it.first;
     _streams.removeWhere((element) => element.stream!.id == stream.id);
     onStreamRemoved.add(wpstream);
-    fireCallEvent(CallEvent.kFeedsChanged);
+    fireCallEvent(CallStateChange.kFeedsChanged);
     await wpstream.dispose();
   }
 
@@ -1352,41 +1352,41 @@ class CallSession {
     }
   }
 
-  void fireCallEvent(CallEvent event) {
+  void fireCallEvent(CallStateChange event) {
     onCallEventChanged.add(event);
-    Logs().i('CallEvent: ${event.toString()}');
+    Logs().i('CallStateChange: ${event.toString()}');
     switch (event) {
-      case CallEvent.kFeedsChanged:
+      case CallStateChange.kFeedsChanged:
         onCallStreamsChanged.add(this);
         break;
-      case CallEvent.kState:
+      case CallStateChange.kState:
         Logs().i('CallState: ${state.toString()}');
         break;
-      case CallEvent.kError:
+      case CallStateChange.kError:
         break;
-      case CallEvent.kHangup:
+      case CallStateChange.kHangup:
         break;
-      case CallEvent.kReplaced:
+      case CallStateChange.kReplaced:
         break;
-      case CallEvent.kLocalHoldUnhold:
+      case CallStateChange.kLocalHoldUnhold:
         break;
-      case CallEvent.kRemoteHoldUnhold:
+      case CallStateChange.kRemoteHoldUnhold:
         break;
-      case CallEvent.kAssertedIdentityChanged:
+      case CallStateChange.kAssertedIdentityChanged:
         break;
     }
   }
 
   Future<void> _getLocalOfferFailed(dynamic err) async {
     Logs().e('Failed to get local offer ${err.toString()}');
-    fireCallEvent(CallEvent.kError);
+    fireCallEvent(CallStateChange.kError);
 
     await terminate(CallParty.kLocal, CallErrorCode.localOfferFailed, true);
   }
 
   Future<void> _getUserMediaFailed(dynamic err) async {
     Logs().w('Failed to get user media - ending call ${err.toString()}');
-    fireCallEvent(CallEvent.kError);
+    fireCallEvent(CallStateChange.kError);
     await terminate(CallParty.kLocal, CallErrorCode.userMediaFailed, true);
   }
 

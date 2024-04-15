@@ -59,8 +59,6 @@ abstract class EventTypes {
   static const String CallAssertedIdentity = 'm.call.asserted_identity';
   static const String CallAssertedIdentityPrefix =
       'org.matrix.call.asserted_identity';
-  static const String GroupCallPrefix = 'org.matrix.msc3401.call';
-  static const String GroupCallMemberPrefix = 'org.matrix.msc3401.call.member';
   static const String Unknown = 'm.unknown';
 
   // To device event types
@@ -96,4 +94,24 @@ abstract class EventTypes {
   // Spaces
   static const String spaceParent = 'm.space.parent';
   static const String spaceChild = 'm.space.child';
+
+  // MatrixRTC
+  static const String GroupCallMember = 'com.famedly.call.member';
+  static const String GroupCallMemberEncryptionKeys =
+      '$GroupCallMember.encryption_keys';
+  static const String GroupCallMemberEncryptionKeysRequest =
+      '$GroupCallMember.encryption_keys_request';
+  static const String GroupCallMemberCandidates = '$GroupCallMember.candidates';
+  static const String GroupCallMemberInvite = '$GroupCallMember.invite';
+  static const String GroupCallMemberAnswer = '$GroupCallMember.answer';
+  static const String GroupCallMemberHangup = '$GroupCallMember.hangup';
+  static const String GroupCallMemberSelectAnswer =
+      '$GroupCallMember.select_answer';
+  static const String GroupCallMemberReject = '$GroupCallMember.reject';
+  static const String GroupCallMemberNegotiate = '$GroupCallMember.negotiate';
+  static const String GroupCallMemberSDPStreamMetadataChangedPrefix =
+      '$GroupCallMember.sdp_stream_metadata_changed';
+  static const String GroupCallMemberReplaces = '$GroupCallMember.replaces';
+  static const String GroupCallMemberAssertedIdentityPrefix =
+      '$GroupCallMember.asserted_identity';
 }

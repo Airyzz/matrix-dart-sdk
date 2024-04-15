@@ -89,7 +89,7 @@ class VoIP {
     // handles the com.famedly.call events.
     client.onRoomState.stream.listen(
       (event) async {
-        if (event.type == VoIPEventTypes.FamedlyCallMemberEvent) {
+        if (event.type == EventTypes.GroupCallMember) {
           Logs().v('[VOIP] onRoomState: type ${event.toJson()}');
           final mems = event.room.getCallMembershipsFromEvent(event);
           for (final mem in mems) {
@@ -158,7 +158,7 @@ class VoIP {
 
   Future<void> _handleCallEvent(BasicEventWithSender event) async {
     // member event updates handled in onRoomState for ease
-    if (event.type == VoIPEventTypes.FamedlyCallMemberEvent) return;
+    if (event.type == EventTypes.GroupCallMember) return;
 
     GroupCallSession? groupCallSession;
     Room? room;
@@ -186,7 +186,7 @@ class VoIP {
         return;
       }
 
-      if (!event.type.startsWith(VoIPEventTypes.EncryptionKeysEvent)) {
+      if (!event.type.startsWith(EventTypes.GroupCallMemberEncryptionKeys)) {
         // livekit calls have their own session deduplication logic so ignore sessionId deduplication for them
         final destSessionId = event.content.tryGet<String>('dest_session_id');
         if (destSessionId != currentSessionId) {
@@ -211,7 +211,8 @@ class VoIP {
       Logs().e(
           '[VOIP] _handleCallEvent call event does not contain a room_id, ignoring');
       return;
-    } else if (!event.type.startsWith(VoIPEventTypes.EncryptionKeysEvent)) {
+    } else if (!event.type
+        .startsWith(EventTypes.GroupCallMemberEncryptionKeys)) {
       // skip webrtc event checks on encryption_keys
       final callId = content['call_id'] as String?;
       final partyId = content['party_id'] as String?;
@@ -288,11 +289,11 @@ class VoIP {
       case EventTypes.CallAssertedIdentity:
         await onAssertedIdentityReceived(room, content);
         break;
-      case VoIPEventTypes.EncryptionKeysEvent:
+      case EventTypes.GroupCallMemberEncryptionKeys:
         await groupCallSession!.backend.onCallEncryption(
             groupCallSession, remoteUserId, remoteDeviceId!, content);
         break;
-      case VoIPEventTypes.RequestEncryptionKeysEvent:
+      case EventTypes.GroupCallMemberEncryptionKeysRequest:
         await groupCallSession!.backend.onCallEncryptionKeyRequest(
             groupCallSession, remoteUserId, remoteDeviceId!, content);
         break;

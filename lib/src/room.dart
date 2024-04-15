@@ -1846,12 +1846,11 @@ class Room {
         50;
   }
 
-  /// if returned value is not null `org.matrix.msc3401.call.member` is present
+  /// if returned value is not null `EventTypes.GroupCallMember` is present
   /// and group calls can be used
-  bool get groupCallsEnabled =>
-      canChangeStateEvent(VoIPEventTypes.FamedlyCallMemberEvent);
+  bool get groupCallsEnabled => canChangeStateEvent(EventTypes.GroupCallMember);
 
-  /// sets the `org.matrix.msc3401.call.member` power level to users default for
+  /// sets the `EventTypes.GroupCallMember` power level to users default for
   /// group calls, needs permissions to change power levels
   Future<void> enableGroupCalls() async {
     if (!canChangePowerLevel) return;
@@ -1861,8 +1860,7 @@ class Room {
       final eventsMap = newPowerLevelMap.tryGetMap<String, Object?>('events') ??
           <String, Object?>{};
       eventsMap.addAll({
-        VoIPEventTypes.FamedlyCallMemberEvent:
-            getDefaultPowerLevel(currentPowerLevelsMap)
+        EventTypes.GroupCallMember: getDefaultPowerLevel(currentPowerLevelsMap)
       });
       newPowerLevelMap.addAll({'events': eventsMap});
       await client.setRoomStateWithKey(

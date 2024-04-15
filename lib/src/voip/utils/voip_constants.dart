@@ -39,6 +39,9 @@ class CallTimeouts {
 }
 
 class CallConstants {
+  static final callEventsRegxp =
+      RegExp(r'm.call.|org.matrix.msc3401.call.|com.famedly.call.');
+
   static const callEndedEventTypes = {
     EventTypes.CallAnswer,
     EventTypes.CallHangup,

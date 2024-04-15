@@ -211,7 +211,7 @@ class LiveKitBackend extends CallBackend {
         groupCall,
         sendTo ?? sendKeysTo.toList(),
         data,
-        VoIPEventTypes.EncryptionKeysEvent,
+        EventTypes.GroupCallMemberEncryptionKeys,
       );
     } catch (e, s) {
       Logs().e('Failed to send e2ee keys, retrying', e, s);
@@ -298,7 +298,7 @@ class LiveKitBackend extends CallBackend {
       groupCall,
       remoteParticipants,
       data,
-      VoIPEventTypes.RequestEncryptionKeysEvent,
+      EventTypes.GroupCallMemberEncryptionKeysRequest,
     );
   }
 

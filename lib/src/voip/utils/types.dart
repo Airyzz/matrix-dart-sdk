@@ -1,14 +1,5 @@
 // ignore_for_file: constant_identifier_names
 
-class VoIPEventTypes {
-  // static const String Prefix = 'com.famedly.call';
-  static const String Prefix = 'org.matrix.msc3401.call';
-  static const String FamedlyCallMemberEvent = '$Prefix.member';
-  static const String EncryptionKeysEvent = '$Prefix.encryption_keys';
-  static const String RequestEncryptionKeysEvent =
-      '$EncryptionKeysEvent.request';
-}
-
 enum EncryptionKeyTypes { remote, local }
 
 // Call state

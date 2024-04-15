@@ -9,7 +9,7 @@ extension FamedlyCallMemberEventsExtension on Room {
   Map<String, FamedlyCallMemberEvent> getFamedlyCallEvents() {
     final Map<String, FamedlyCallMemberEvent> mappedEvents = {};
     final famedlyCallMemberStates =
-        states.tryGetMap<String, Event>(VoIPEventTypes.FamedlyCallMemberEvent);
+        states.tryGetMap<String, Event>(EventTypes.GroupCallMember);
 
     if (famedlyCallMemberStates == null) return {};
     final sortedEvents = famedlyCallMemberStates.values
@@ -123,13 +123,13 @@ extension FamedlyCallMemberEventsExtension on Room {
     if (groupCallsEnabled) {
       await client.setRoomStateWithKey(
         id,
-        VoIPEventTypes.FamedlyCallMemberEvent,
+        EventTypes.GroupCallMember,
         client.userID!,
         newContent,
       );
     } else {
       Logs().w(
-          '[VOIP] cannot send ${VoIPEventTypes.FamedlyCallMemberEvent} events in room: $id, fix your PLs');
+          '[VOIP] cannot send ${EventTypes.GroupCallMember} events in room: $id, fix your PLs');
     }
   }
 

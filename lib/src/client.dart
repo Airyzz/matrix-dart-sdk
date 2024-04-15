@@ -231,8 +231,7 @@ class Client extends MatrixApi {
       EventTypes.CallAnswer,
       EventTypes.CallReject,
       EventTypes.CallHangup,
-      EventTypes.GroupCallPrefix,
-      EventTypes.GroupCallMemberPrefix,
+      EventTypes.GroupCallMember,
     ]);
 
     // register all the default commands
@@ -800,7 +799,7 @@ class Client extends MatrixApi {
     if (groupCall) {
       powerLevelContentOverride ??= {};
       powerLevelContentOverride['events'] = <String, dynamic>{
-        VoIPEventTypes.FamedlyCallMemberEvent: 0,
+        EventTypes.GroupCallMember: 0,
       };
     }
     final roomId = await createRoom(
@@ -2055,8 +2054,7 @@ class Client extends MatrixApi {
         }
         await encryption?.handleToDeviceEvent(toDeviceEvent);
       }
-      if (toDeviceEvent.type.startsWith(
-          RegExp(r'm.call.|org.matrix.msc3401.call.|com.famedly.call.'))) {
+      if (toDeviceEvent.type.startsWith(CallConstants.callEventsRegxp)) {
         callToDeviceEvents.add(toDeviceEvent);
       }
       onToDeviceEvent.add(toDeviceEvent);
@@ -2282,8 +2280,9 @@ class Client extends MatrixApi {
       if (prevBatch != null &&
           (type == EventUpdateType.timeline ||
               type == EventUpdateType.decryptedTimelineQueue)) {
-        if ((update.content.tryGet<String>('type')?.startsWith(RegExp(
-                r'm.call.|org.matrix.msc3401.call.|com.famedly.call.')) ??
+        if ((update.content
+                .tryGet<String>('type')
+                ?.startsWith(CallConstants.callEventsRegxp) ??
             false)) {
           final callEvent = Event.fromJson(update.content, room);
           callEvents.add(callEvent);

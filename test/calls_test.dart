@@ -492,7 +492,7 @@ void main() {
               ).toJson(),
             ]
           },
-          type: VoIPEventTypes.FamedlyCallMemberEvent,
+          type: EventTypes.GroupCallMember,
           eventId: 'asdfasdf',
           senderId: '@test1:example.com',
           originServerTs: DateTime.now().add(Duration(hours: 12)),
@@ -515,7 +515,7 @@ void main() {
               ).toJson(),
             ]
           },
-          type: VoIPEventTypes.FamedlyCallMemberEvent,
+          type: EventTypes.GroupCallMember,
           eventId: 'asdfasdf',
           senderId: '@test2:example.com',
           originServerTs: DateTime.now(),
@@ -538,7 +538,7 @@ void main() {
               ).toJson(),
             ]
           },
-          type: VoIPEventTypes.FamedlyCallMemberEvent,
+          type: EventTypes.GroupCallMember,
           eventId: 'asdfasdf',
           senderId: '@test2.0:example.com',
           originServerTs: DateTime.now(),
@@ -563,7 +563,7 @@ void main() {
               ).toJson(),
             ]
           },
-          type: VoIPEventTypes.FamedlyCallMemberEvent,
+          type: EventTypes.GroupCallMember,
           eventId: 'asdfasdf',
           senderId: '@test3:example.com',
           originServerTs: DateTime.now().subtract(Duration(hours: 1)),
@@ -598,7 +598,7 @@ void main() {
           room: room,
           eventId: '123a',
           content: {
-            'events': {VoIPEventTypes.FamedlyCallMemberEvent: 100},
+            'events': {EventTypes.GroupCallMember: 100},
             'state_default': 50,
             'users_default': 0
           },
@@ -615,7 +615,7 @@ void main() {
           room: room,
           eventId: '123a',
           content: {
-            'events': {EventTypes.GroupCallMemberPrefix: 27},
+            'events': {EventTypes.GroupCallMember: 27},
             'state_default': 50,
             'users_default': 49
           },
@@ -647,7 +647,7 @@ void main() {
       room.setState(
         Event(
             senderId: '@test1:example.com',
-            type: EventTypes.GroupCallMemberPrefix,
+            type: EventTypes.GroupCallMember,
             room: room,
             eventId: '1234177',
             content: {
@@ -675,7 +675,7 @@ void main() {
       room.setState(
         Event(
             senderId: '@test2:example.com',
-            type: EventTypes.GroupCallMemberPrefix,
+            type: EventTypes.GroupCallMember,
             room: room,
             eventId: '1234177',
             content: {
@@ -702,7 +702,7 @@ void main() {
       room.setState(
         Event(
             senderId: '@test3:example.com',
-            type: EventTypes.GroupCallMemberPrefix,
+            type: EventTypes.GroupCallMember,
             room: room,
             eventId: '1231234124123',
             content: {

@@ -1445,7 +1445,7 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallInvite,
+      isGroupCall ? EventTypes.GroupCallMemberInvite : EventTypes.CallInvite,
       content,
       txid: txid,
     );
@@ -1473,7 +1473,9 @@ class CallSession {
 
     return await _sendCallContent(
       room,
-      EventTypes.CallSelectAnswer,
+      isGroupCall
+          ? EventTypes.GroupCallMemberSelectAnswer
+          : EventTypes.CallSelectAnswer,
       content,
       txid: txid,
     );
@@ -1494,7 +1496,7 @@ class CallSession {
 
     return await _sendCallContent(
       room,
-      EventTypes.CallReject,
+      isGroupCall ? EventTypes.GroupCallMemberReject : EventTypes.CallReject,
       content,
       txid: txid,
     );
@@ -1524,7 +1526,9 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallNegotiate,
+      isGroupCall
+          ? EventTypes.GroupCallMemberNegotiate
+          : EventTypes.CallNegotiate,
       content,
       txid: txid,
     );
@@ -1567,7 +1571,9 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallCandidates,
+      isGroupCall
+          ? EventTypes.GroupCallMemberCandidates
+          : EventTypes.CallCandidates,
       content,
       txid: txid,
     );
@@ -1597,7 +1603,7 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallAnswer,
+      isGroupCall ? EventTypes.GroupCallMemberAnswer : EventTypes.CallAnswer,
       content,
       txid: txid,
     );
@@ -1619,7 +1625,7 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallHangup,
+      isGroupCall ? EventTypes.GroupCallMemberHangup : EventTypes.CallHangup,
       content,
       txid: txid,
     );
@@ -1651,7 +1657,9 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallSDPStreamMetadataChanged,
+      isGroupCall
+          ? EventTypes.GroupCallMemberSDPStreamMetadataChanged
+          : EventTypes.CallSDPStreamMetadataChanged,
       content,
       txid: txid,
     );
@@ -1675,7 +1683,9 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallReplaces,
+      isGroupCall
+          ? EventTypes.GroupCallMemberReplaces
+          : EventTypes.CallReplaces,
       content,
       txid: txid,
     );
@@ -1699,7 +1709,9 @@ class CallSession {
     };
     return await _sendCallContent(
       room,
-      EventTypes.CallAssertedIdentity,
+      isGroupCall
+          ? EventTypes.GroupCallMemberAssertedIdentity
+          : EventTypes.CallAssertedIdentity,
       content,
       txid: txid,
     );
@@ -1735,7 +1747,8 @@ class CallSession {
             client.userDeviceKeys[remoteUserId]!.deviceKeys[remoteDeviceId]!
           ], type, data);
         } else {
-          Logs().w('[VOIP] _sendContent missing device keys for $remoteUserId');
+          Logs().w(
+              '[VOIP] _sendCallContent missing device keys for $remoteUserId');
         }
       } else {
         await client.sendToDevice(

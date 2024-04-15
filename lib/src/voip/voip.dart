@@ -259,34 +259,44 @@ class VoIP {
 
     switch (event.type) {
       case EventTypes.CallInvite:
+      case EventTypes.GroupCallMemberInvite:
         await onCallInvite(room, remoteUserId, remoteDeviceId, content);
         break;
       case EventTypes.CallAnswer:
+      case EventTypes.GroupCallMemberAnswer:
         await onCallAnswer(room, remoteUserId, remoteDeviceId, content);
         break;
       case EventTypes.CallCandidates:
+      case EventTypes.GroupCallMemberCandidates:
         await onCallCandidates(room, content);
         break;
       case EventTypes.CallHangup:
+      case EventTypes.GroupCallMemberHangup:
         await onCallHangup(room, content);
         break;
       case EventTypes.CallReject:
+      case EventTypes.GroupCallMemberReject:
         await onCallReject(room, content);
         break;
       case EventTypes.CallNegotiate:
+      case EventTypes.GroupCallMemberNegotiate:
         await onCallNegotiate(room, content);
         break;
       // case EventTypes.CallReplaces:
       //   await onCallReplaces(room, content);
       //   break;
       case EventTypes.CallSelectAnswer:
+      case EventTypes.GroupCallMemberSelectAnswer:
         await onCallSelectAnswer(room, content);
         break;
       case EventTypes.CallSDPStreamMetadataChanged:
       case EventTypes.CallSDPStreamMetadataChangedPrefix:
+      case EventTypes.GroupCallMemberSDPStreamMetadataChanged:
         await onSDPStreamMetadataChangedReceived(room, content);
         break;
       case EventTypes.CallAssertedIdentity:
+      case EventTypes.CallAssertedIdentityPrefix:
+      case EventTypes.GroupCallMemberAssertedIdentity:
         await onAssertedIdentityReceived(room, content);
         break;
       case EventTypes.GroupCallMemberEncryptionKeys:
@@ -462,15 +472,13 @@ class VoIP {
 
       if (call.remoteUserId == null) {
         Logs().i(
-            '''[VOIP] you probably called the room without setting a userId in 
-            invite, setting the calls remote user id to what I get from m.call.answer now''');
+            '[VOIP] you probably called the room without setting a userId in invite, setting the calls remote user id to what I get from m.call.answer now');
         call.remoteUserId = remoteUserId;
       }
 
       if (call.remoteDeviceId == null) {
         Logs().i(
-            '''[VOIP] you probably called the room without setting a userId in 
-            invite, setting the calls remote user id to what I get from m.call.answer now''');
+            '[VOIP] you probably called the room without setting a userId in invite, setting the calls remote user id to what I get from m.call.answer now');
         call.remoteDeviceId = remoteDeviceId;
       }
       if (call.remotePartyId != null) {

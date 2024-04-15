@@ -109,9 +109,9 @@ abstract class EventTypes {
       '$GroupCallMember.select_answer';
   static const String GroupCallMemberReject = '$GroupCallMember.reject';
   static const String GroupCallMemberNegotiate = '$GroupCallMember.negotiate';
-  static const String GroupCallMemberSDPStreamMetadataChangedPrefix =
+  static const String GroupCallMemberSDPStreamMetadataChanged =
       '$GroupCallMember.sdp_stream_metadata_changed';
   static const String GroupCallMemberReplaces = '$GroupCallMember.replaces';
-  static const String GroupCallMemberAssertedIdentityPrefix =
+  static const String GroupCallMemberAssertedIdentity =
       '$GroupCallMember.asserted_identity';
 }

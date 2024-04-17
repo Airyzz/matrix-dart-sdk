@@ -1848,7 +1848,14 @@ class Room {
 
   /// if returned value is not null `EventTypes.GroupCallMember` is present
   /// and group calls can be used
-  bool get groupCallsEnabled => canChangeStateEvent(EventTypes.GroupCallMember);
+  bool get groupCallsEnabledForEveryone {
+    final powerLevelMap = getState(EventTypes.RoomPowerLevels)?.content;
+    if (powerLevelMap == null) return false;
+    return powerForChangingStateEvent(EventTypes.GroupCallMember) <=
+        getDefaultPowerLevel(powerLevelMap);
+  }
+
+  bool get canJoinGroupCall => canChangeStateEvent(EventTypes.GroupCallMember);
 
   /// sets the `EventTypes.GroupCallMember` power level to users default for
   /// group calls, needs permissions to change power levels

@@ -753,31 +753,25 @@ class VoIP {
     final groupCall = getGroupCallById(room.id, groupCallId);
 
     if (groupCall != null) {
-      if (!room.groupCallsEnabled) {
+      if (!room.canJoinGroupCall) {
         throw Exception(
             'User is not allowed to join famedly calls in the room');
       }
       return groupCall;
     }
 
-    if (!room.groupCallsEnabled) {
+    if (!room.groupCallsEnabledForEveryone) {
       await room.enableGroupCalls();
     }
 
-    if (room.groupCallsEnabled) {
-      // The call doesn't exist, but we can create it
-      final groupCall = await _newGroupCall(
-        groupCallId,
-        room,
-        backend,
-        application,
-        scope,
-      );
-
-      return groupCall;
-    } else {
-      throw Exception('User is not allowed to join famedly calls in the room');
-    }
+    // The call doesn't exist, but we can create it
+    return await _newGroupCall(
+      groupCallId,
+      room,
+      backend,
+      application,
+      scope,
+    );
   }
 
   GroupCallSession? getGroupCallById(String roomId, String groupCallId) {

@@ -45,13 +45,14 @@ class WrappedMediaStream {
 
   String get id => '${stream?.id}: $title';
 
-  bool get isWeb => bool.fromEnvironment('dart.library.js_util');
-
   Future<void> dispose() async {
-    /// libwebrtc does not provide a way to clone MediaStreams. So stopping the
-    /// local stream here would break calls with all other participants if anyone
-    /// leaves. The local stream is manually disposed when user leaves. On web
-    /// streams are actually cloned.
+    // AOT it
+    const isWeb = bool.fromEnvironment('dart.library.js_util');
+
+    // libwebrtc does not provide a way to clone MediaStreams. So stopping the
+    // local stream here would break calls with all other participants if anyone
+    // leaves. The local stream is manually disposed when user leaves. On web
+    // streams are actually cloned.
     if (!isGroupCall || isWeb) {
       await stopMediaStream(stream);
     }

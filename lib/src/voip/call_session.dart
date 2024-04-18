@@ -801,7 +801,8 @@ class CallSession {
           }
         }
         // for renderer to be able to show new video track
-        localUserMediaStream?.setNewStream(stream);
+        localUserMediaStream?.onStreamChanged
+            .add(localUserMediaStream!.stream!);
       }
     }
   }
@@ -1199,7 +1200,11 @@ class CallSession {
         !vidShouldBeMuted);
 
     await sendSDPStreamMetadataChanged(
-        room, callId, localPartyId, _getLocalSDPStreamMetadata());
+      room,
+      callId,
+      localPartyId,
+      _getLocalSDPStreamMetadata(),
+    );
   }
 
   void _setTracksEnabled(List<MediaStreamTrack> tracks, bool enabled) {

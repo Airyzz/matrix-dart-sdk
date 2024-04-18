@@ -29,6 +29,9 @@ enum CallState {
   /// The call was received, but no processing has been done yet.
   kRinging,
 
+  /// Ending a call
+  kEnding,
+
   /// End of call
   kEnded,
 }

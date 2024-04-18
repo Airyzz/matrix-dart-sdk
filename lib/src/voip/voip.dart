@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:core';
 
+import 'package:collection/collection.dart';
 import 'package:sdp_transform/sdp_transform.dart' as sdp_transform;
 import 'package:webrtc_interface/webrtc_interface.dart';
 
@@ -522,8 +523,12 @@ class VoIP {
     final call = calls[VoipId(roomId: room.id, callId: callId)];
     if (call != null) {
       // hangup in any case, either if the other party hung up or we did on another device
-      await call.terminate(CallParty.kRemote,
-          content['reason'] ?? CallErrorCode.userHangup, true);
+      await call.terminate(
+          CallParty.kRemote,
+          CallErrorCode.values.firstWhereOrNull(
+                  (element) => element.reason == content['reason']) ??
+              CallErrorCode.userHangup,
+          true);
     } else {
       Logs().v('[VOIP] onCallHangup: Session [$callId] not found!');
     }
@@ -538,7 +543,11 @@ class VoIP {
 
     final call = calls[VoipId(roomId: room.id, callId: callId)];
     if (call != null) {
-      await call.onRejectReceived(content['reason']);
+      await call.onRejectReceived(
+        CallErrorCode.values.firstWhereOrNull(
+                (element) => element.reason == content['reason']) ??
+            CallErrorCode.userHangup,
+      );
     } else {
       Logs().v('[VOIP] onCallReject: Session [$callId] not found!');
     }

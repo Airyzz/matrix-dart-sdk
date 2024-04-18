@@ -902,6 +902,7 @@ class CallSession {
   /// This used to be done by calling hangup, but is a separate method and protocol
   /// event as of MSC2746.
   Future<void> reject({CallErrorCode? reason, bool shouldEmit = true}) async {
+    setCallState(CallState.kEnding);
     if (state != CallState.kRinging && state != CallState.kFledgling) {
       Logs().e(
           '[VOIP] Call must be in \'ringing|fledgling\' state to reject! (current state was: ${state.toString()}) Calling hangup instead');
@@ -917,8 +918,8 @@ class CallSession {
 
   Future<void> hangup(
       {required CallErrorCode reason, bool shouldEmit = true}) async {
+    setCallState(CallState.kEnding);
     await terminate(CallParty.kLocal, reason, shouldEmit);
-
     try {
       final res =
           await sendHangupCall(room, callId, localPartyId, 'userHangup');
@@ -944,6 +945,14 @@ class CallSession {
     CallErrorCode reason,
     bool shouldEmit,
   ) async {
+    if (state == CallState.kConnected) {
+      await hangup(
+        reason: CallErrorCode.userHangup,
+        shouldEmit: true,
+      );
+      return;
+    }
+
     Logs().d('[VOIP] terminating call');
     _inviteTimer?.cancel();
     _inviteTimer = null;
@@ -1204,9 +1213,10 @@ class CallSession {
     for (final wpstream in getLocalStreams) {
       if (wpstream.stream != null) {
         sdpStreamMetadatas[wpstream.stream!.id] = SDPStreamPurpose(
-            purpose: wpstream.purpose,
-            audio_muted: wpstream.audioMuted,
-            video_muted: wpstream.videoMuted);
+          purpose: wpstream.purpose,
+          audio_muted: wpstream.audioMuted,
+          video_muted: wpstream.videoMuted,
+        );
       }
     }
     final metadata = SDPStreamMetadata(sdpStreamMetadatas);

@@ -6,7 +6,6 @@ import 'package:matrix/matrix.dart';
 
 class MockWebRTCDelegate implements WebRTCDelegate {
   @override
-  // TODO: implement canHandleNewCall
   bool get canHandleNewCall => true;
 
   @override
@@ -17,8 +16,8 @@ class MockWebRTCDelegate implements WebRTCDelegate {
       MockRTCPeerConnection();
 
   @override
-  VideoRenderer createRenderer() {
-    return MockVideoRenderer();
+  Future<void> registerListeners(CallSession session) async {
+    Logs().i('registerListeners called in MockWebRTCDelegate');
   }
 
   @override
@@ -27,7 +26,7 @@ class MockWebRTCDelegate implements WebRTCDelegate {
   }
 
   @override
-  Future<void> handleGroupCallEnded(GroupCall groupCall) async {
+  Future<void> handleGroupCallEnded(GroupCallSession groupCall) async {
     Logs().i('handleGroupCallEnded called in MockWebRTCDelegate');
   }
 
@@ -42,7 +41,7 @@ class MockWebRTCDelegate implements WebRTCDelegate {
   }
 
   @override
-  Future<void> handleNewGroupCall(GroupCall groupCall) async {
+  Future<void> handleNewGroupCall(GroupCallSession groupCall) async {
     Logs().i('handleNewGroupCall called in MockWebRTCDelegate');
   }
 
@@ -61,6 +60,30 @@ class MockWebRTCDelegate implements WebRTCDelegate {
   Future<void> stopRingtone() async {
     Logs().i('stopRingtone called in MockWebRTCDelegate');
   }
+
+  @override
+  EncryptionKeyProvider? get keyProvider => MockEncryptionKeyProvider();
+}
+
+class MockEncryptionKeyProvider implements EncryptionKeyProvider {
+  @override
+  Future<void> onSetEncryptionKey(
+    CallParticipant participant,
+    Uint8List key,
+    int index,
+  ) async {
+    Logs().i('Mock onSetEncryptionKey called for ${participant.id} ');
+  }
+
+  @override
+  Future<Uint8List> onExportKey(CallParticipant participant, int index) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<Uint8List> onRatchetKey(CallParticipant participant, int index) {
+    throw UnimplementedError();
+  }
 }
 
 class MockMediaDevices implements MediaDevices {
@@ -69,37 +92,33 @@ class MockMediaDevices implements MediaDevices {
 
   @override
   Future<List<MediaDeviceInfo>> enumerateDevices() {
-    // TODO: implement enumerateDevices
     throw UnimplementedError();
   }
 
   @override
   Future<MediaStream> getDisplayMedia(Map<String, dynamic> mediaConstraints) {
-    // TODO: implement getDisplayMedia
     throw UnimplementedError();
   }
 
   @override
   Future<List> getSources() {
-    // TODO: implement getSources
     throw UnimplementedError();
   }
 
   @override
   MediaTrackSupportedConstraints getSupportedConstraints() {
-    // TODO: implement getSupportedConstraints
     throw UnimplementedError();
   }
 
   @override
   Future<MediaStream> getUserMedia(
-      Map<String, dynamic> mediaConstraints) async {
+    Map<String, dynamic> mediaConstraints,
+  ) async {
     return MockMediaStream('', '');
   }
 
   @override
   Future<MediaDeviceInfo> selectAudioOutput([AudioOutputOptions? options]) {
-    // TODO: implement selectAudioOutput
     throw UnimplementedError();
   }
 }
@@ -193,16 +212,18 @@ class MockRTCPeerConnection implements RTCPeerConnection {
   }
 
   @override
-  Future<RTCSessionDescription> createOffer(
-      [Map<String, dynamic>? constraints]) {
+  Future<RTCSessionDescription> createOffer([
+    Map<String, dynamic>? constraints,
+  ]) {
     // Mock implementation for creating an offer
     Logs().i('Mock: Creating offer');
     return Future.value(RTCSessionDescription('', ''));
   }
 
   @override
-  Future<RTCSessionDescription> createAnswer(
-      [Map<String, dynamic>? constraints]) {
+  Future<RTCSessionDescription> createAnswer([
+    Map<String, dynamic>? constraints,
+  ]) {
     // Mock implementation for creating an answer
     Logs().i('Mock: Creating answer');
     return Future.value(RTCSessionDescription('', ''));
@@ -275,7 +296,9 @@ class MockRTCPeerConnection implements RTCPeerConnection {
 
   @override
   Future<RTCDataChannel> createDataChannel(
-      String label, RTCDataChannelInit dataChannelDict) async {
+    String label,
+    RTCDataChannelInit dataChannelDict,
+  ) async {
     // Mock implementation for creating a data channel
     Logs().i('Mock: Creating data channel');
     return MockRTCDataChannel();
@@ -322,8 +345,10 @@ class MockRTCPeerConnection implements RTCPeerConnection {
   }
 
   @override
-  Future<RTCRtpSender> addTrack(MediaStreamTrack track,
-      [MediaStream? stream]) async {
+  Future<RTCRtpSender> addTrack(
+    MediaStreamTrack track, [
+    MediaStream? stream,
+  ]) async {
     // Mock implementation for adding a track
     Logs().i('Mock: Adding track');
     return MockRTCRtpSender();
@@ -337,25 +362,23 @@ class MockRTCPeerConnection implements RTCPeerConnection {
   }
 
   @override
-  Future<RTCRtpTransceiver> addTransceiver(
-      {MediaStreamTrack? track,
-      RTCRtpMediaType? kind,
-      RTCRtpTransceiverInit? init}) async {
+  Future<RTCRtpTransceiver> addTransceiver({
+    MediaStreamTrack? track,
+    RTCRtpMediaType? kind,
+    RTCRtpTransceiverInit? init,
+  }) async {
     // Mock implementation for adding a transceiver
     Logs().i('Mock: Adding transceiver');
     return MockRTCRtpTransceiver();
   }
 
   @override
-  // TODO: implement receivers
   Future<List<RTCRtpReceiver>> get receivers => throw UnimplementedError();
 
   @override
-  // TODO: implement senders
   Future<List<RTCRtpSender>> get senders => throw UnimplementedError();
 
   @override
-  // TODO: implement transceivers
   Future<List<RTCRtpTransceiver>> get transceivers =>
       throw UnimplementedError();
 }
@@ -411,69 +434,58 @@ class MockRTCRtpTransceiver implements RTCRtpTransceiver {
   TransceiverDirection get currentDirection {
     // Deprecated method, should be replaced with `await getCurrentDirection`
     throw UnimplementedError(
-        'Need to be call asynchronously from native SDK, so the method is deprecated');
+      'Need to be call asynchronously from native SDK, so the method is deprecated',
+    );
   }
 
   @override
-  // TODO: implement stoped
   bool get stoped => throw UnimplementedError();
 }
 
 class MockRTCRtpSender implements RTCRtpSender {
   @override
   Future<void> dispose() {
-    // TODO: implement dispose
     throw UnimplementedError();
   }
 
   @override
-  // TODO: implement dtmfSender
   RTCDTMFSender get dtmfSender => throw UnimplementedError();
 
   @override
   Future<List<StatsReport>> getStats() {
-    // TODO: implement getStats
     throw UnimplementedError();
   }
 
   @override
-  // TODO: implement ownsTrack
   bool get ownsTrack => throw UnimplementedError();
 
   @override
-  // TODO: implement parameters
   RTCRtpParameters get parameters => throw UnimplementedError();
 
   @override
   Future<void> replaceTrack(MediaStreamTrack? track) {
-    // TODO: implement replaceTrack
     throw UnimplementedError();
   }
 
   @override
-  // TODO: implement senderId
   String get senderId => throw UnimplementedError();
 
   @override
   Future<bool> setParameters(RTCRtpParameters parameters) {
-    // TODO: implement setParameters
     throw UnimplementedError();
   }
 
   @override
   Future<void> setStreams(List<MediaStream> streams) {
-    // TODO: implement setStreams
     throw UnimplementedError();
   }
 
   @override
   Future<void> setTrack(MediaStreamTrack? track, {bool takeOwnership = true}) {
-    // TODO: implement setTrack
     throw UnimplementedError();
   }
 
   @override
-  // TODO: implement track
   MediaStreamTrack? get track => throw UnimplementedError();
   // Mock implementation for RTCRtpSender
 }
@@ -485,20 +497,16 @@ class MockRTCRtpReceiver implements RTCRtpReceiver {
 
   @override
   Future<List<StatsReport>> getStats() {
-    // TODO: implement getStats
     throw UnimplementedError();
   }
 
   @override
-  // TODO: implement parameters
   RTCRtpParameters get parameters => throw UnimplementedError();
 
   @override
-  // TODO: implement receiverId
   String get receiverId => throw UnimplementedError();
 
   @override
-  // TODO: implement track
   MediaStreamTrack? get track => throw UnimplementedError();
   // Mock implementation for RTCRtpReceiver
 }
@@ -607,17 +615,24 @@ class MockMediaStreamTrack implements MediaStreamTrack {
 
 class MockRTCDTMFSender implements RTCDTMFSender {
   @override
-  Future<void> insertDTMF(String tones,
-      {int duration = 100, int interToneGap = 70}) async {
+  Future<void> insertDTMF(
+    String tones, {
+    int duration = 100,
+    int interToneGap = 70,
+  }) async {
     // Mock implementation for inserting DTMF tones
     Logs().i(
-        'Mock: Inserting DTMF tones: $tones, Duration: $duration, InterToneGap: $interToneGap');
+      'Mock: Inserting DTMF tones: $tones, Duration: $duration, InterToneGap: $interToneGap',
+    );
   }
 
   @override
   @Deprecated('Use method insertDTMF instead')
-  Future<void> sendDtmf(String tones,
-      {int duration = 100, int interToneGap = 70}) async {
+  Future<void> sendDtmf(
+    String tones, {
+    int duration = 100,
+    int interToneGap = 70,
+  }) async {
     return insertDTMF(tones, duration: duration, interToneGap: interToneGap);
   }
 
@@ -705,16 +720,20 @@ class MockMediaStream implements MediaStream {
   }
 
   @override
-  Future<void> addTrack(MediaStreamTrack track,
-      {bool addToNative = true}) async {
+  Future<void> addTrack(
+    MediaStreamTrack track, {
+    bool addToNative = true,
+  }) async {
     // Mock implementation for adding a track
     Logs().i('Mock: Adding track to MediaStream: $track');
     onAddTrack?.call(track);
   }
 
   @override
-  Future<void> removeTrack(MediaStreamTrack track,
-      {bool removeFromNative = true}) async {
+  Future<void> removeTrack(
+    MediaStreamTrack track, {
+    bool removeFromNative = true,
+  }) async {
     // Mock implementation for removing a track
     Logs().i('Mock: Removing track from MediaStream: $track');
     onRemoveTrack?.call(track);
@@ -825,4 +844,8 @@ class MockVideoRenderer implements VideoRenderer {
     // Mock implementation for disposing VideoRenderer
     Logs().i('Mock: Disposing VideoRenderer');
   }
+
+  @override
+  // TODO: implement videoValue
+  RTCVideoValue get videoValue => RTCVideoValue.empty;
 }

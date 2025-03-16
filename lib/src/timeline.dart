@@ -41,9 +41,11 @@ class Timeline {
   final void Function(int index)? onRemove;
   final void Function()? onNewEvent;
 
-  StreamSubscription<EventUpdate>? sub;
+  StreamSubscription<Event>? timelineSub;
+  StreamSubscription<Event>? historySub;
   StreamSubscription<SyncUpdate>? roomSub;
   StreamSubscription<String>? sessionIdReceivedSub;
+  StreamSubscription<String>? cancelSendEventSub;
   bool isRequestingHistory = false;
   bool isRequestingFuture = false;
 
@@ -74,39 +76,69 @@ class Timeline {
   // even if /sync's complete while history is being proccessed.
   bool _collectHistoryUpdates = false;
 
+  // We confirmed, that there are no more events to load from the database.
+  bool _fetchedAllDatabaseEvents = false;
+
   bool get canRequestHistory {
     if (events.isEmpty) return true;
-    return room.prev_batch != null && events.last.type != EventTypes.RoomCreate;
+    return !_fetchedAllDatabaseEvents ||
+        (room.prev_batch != null && events.last.type != EventTypes.RoomCreate);
   }
 
-  Future<void> requestHistory(
-      {int historyCount = Room.defaultHistoryCount}) async {
+  /// Request more previous events from the server. [historyCount] defines how many events should
+  /// be received maximum. [filter] allows you to specify a [StateFilter] object to filter the
+  /// events, which can include various criteria such as event types (e.g., [EventTypes.Message])
+  /// and other state-related filters. The [StateFilter] object will have [lazyLoadMembers] set to
+  /// true by default, but this can be overridden.
+  /// This method does not return a value.
+  Future<void> requestHistory({
+    int historyCount = Room.defaultHistoryCount,
+    StateFilter? filter,
+  }) async {
     if (isRequestingHistory) {
       return;
     }
 
     isRequestingHistory = true;
-    await _requestEvents(direction: Direction.b, historyCount: historyCount);
+    await _requestEvents(
+      direction: Direction.b,
+      historyCount: historyCount,
+      filter: filter,
+    );
     isRequestingHistory = false;
   }
 
   bool get canRequestFuture => !allowNewEvent;
 
-  Future<void> requestFuture(
-      {int historyCount = Room.defaultHistoryCount}) async {
+  /// Request more future events from the server. [historyCount] defines how many events should
+  /// be received maximum. [filter] allows you to specify a [StateFilter] object to filter the
+  /// events, which can include various criteria such as event types (e.g., [EventTypes.Message])
+  /// and other state-related filters. The [StateFilter] object will have [lazyLoadMembers] set to
+  /// true by default, but this can be overridden.
+  /// This method does not return a value.
+  Future<void> requestFuture({
+    int historyCount = Room.defaultHistoryCount,
+    StateFilter? filter,
+  }) async {
     if (allowNewEvent) {
       return; // we shouldn't force to add new events if they will autatically be added
     }
 
     if (isRequestingFuture) return;
     isRequestingFuture = true;
-    await _requestEvents(direction: Direction.f, historyCount: historyCount);
+    await _requestEvents(
+      direction: Direction.f,
+      historyCount: historyCount,
+      filter: filter,
+    );
     isRequestingFuture = false;
   }
 
-  Future<void> _requestEvents(
-      {int historyCount = Room.defaultHistoryCount,
-      required Direction direction}) async {
+  Future<void> _requestEvents({
+    int historyCount = Room.defaultHistoryCount,
+    required Direction direction,
+    StateFilter? filter,
+  }) async {
     onUpdate?.call();
 
     try {
@@ -146,20 +178,28 @@ class Timeline {
           }
         }
       } else {
+        _fetchedAllDatabaseEvents = true;
         Logs().i('No more events found in the store. Request from server...');
+
         if (isFragmentedTimeline) {
           await getRoomEvents(
             historyCount: historyCount,
             direction: direction,
+            filter: filter,
           );
         } else {
-          await room.requestHistory(
-            historyCount: historyCount,
-            direction: direction,
-            onHistoryReceived: () {
-              _collectHistoryUpdates = true;
-            },
-          );
+          if (room.prev_batch == null) {
+            Logs().i('No more events to request from server...');
+          } else {
+            await room.requestHistory(
+              historyCount: historyCount,
+              direction: direction,
+              onHistoryReceived: () {
+                _collectHistoryUpdates = true;
+              },
+              filter: filter,
+            );
+          }
         }
       }
     } finally {
@@ -171,17 +211,26 @@ class Timeline {
 
   /// Request more previous events from the server. [historyCount] defines how much events should
   /// be received maximum. When the request is answered, [onHistoryReceived] will be triggered **before**
-  /// the historical events will be published in the onEvent stream.
+  /// the historical events will be published in the onEvent stream. [filter] allows you to specify a
+  /// [StateFilter] object to filter the  events, which can include various criteria such as
+  /// event types (e.g., [EventTypes.Message]) and other state-related filters.
+  /// The [StateFilter] object will have [lazyLoadMembers] set to true by default, but this can be overridden.
   /// Returns the actual count of received timeline events.
-  Future<int> getRoomEvents(
-      {int historyCount = Room.defaultHistoryCount,
-      direction = Direction.b}) async {
+  Future<int> getRoomEvents({
+    int historyCount = Room.defaultHistoryCount,
+    direction = Direction.b,
+    StateFilter? filter,
+  }) async {
+    // Ensure stateFilter is not null and set lazyLoadMembers to true if not already set
+    filter ??= StateFilter(lazyLoadMembers: true);
+    filter.lazyLoadMembers ??= true;
+
     final resp = await room.client.getRoomEvents(
       room.id,
       direction,
       from: direction == Direction.b ? chunk.prevBatch : chunk.nextBatch,
       limit: historyCount,
-      filter: jsonEncode(StateFilter(lazyLoadMembers: true).toJson()),
+      filter: jsonEncode(filter.toJson()),
     );
 
     if (resp.end == null) {
@@ -201,10 +250,12 @@ class Timeline {
         newNextBatch != null) {
       if (type == EventUpdateType.history) {
         Logs().w(
-            '[nav] we can still request history prevBatch: $type $newPrevBatch');
+          '[nav] we can still request history prevBatch: $type $newPrevBatch',
+        );
       } else {
         Logs().w(
-            '[nav] we can still request timeline nextBatch: $type $newNextBatch');
+          '[nav] we can still request timeline nextBatch: $type $newNextBatch',
+        );
       }
     }
 
@@ -213,13 +264,16 @@ class Timeline {
 
     if (!allowNewEvent) {
       if (resp.start == resp.end ||
-          (resp.end == null && direction == Direction.f)) allowNewEvent = true;
+          (resp.end == null && direction == Direction.f)) {
+        allowNewEvent = true;
+      }
 
       if (allowNewEvent) {
         Logs().d('We now allow sync update into the timeline.');
         newEvents.addAll(
-            await room.client.database?.getEventList(room, onlySending: true) ??
-                []);
+          await room.client.database?.getEventList(room, onlySending: true) ??
+              [],
+        );
       }
     }
 
@@ -228,7 +282,6 @@ class Timeline {
       for (var i = 0; i < newEvents.length; i++) {
         if (newEvents[i].type == EventTypes.Encrypted) {
           newEvents[i] = await room.client.encryption!.decryptRoomEvent(
-            room.id,
             newEvents[i],
           );
         }
@@ -261,15 +314,27 @@ class Timeline {
     return resp.chunk.length;
   }
 
-  Timeline(
-      {required this.room,
-      this.onUpdate,
-      this.onChange,
-      this.onInsert,
-      this.onRemove,
-      this.onNewEvent,
-      required this.chunk}) {
-    sub = room.client.onEvent.stream.listen(_handleEventUpdate);
+  Timeline({
+    required this.room,
+    this.onUpdate,
+    this.onChange,
+    this.onInsert,
+    this.onRemove,
+    this.onNewEvent,
+    required this.chunk,
+  }) {
+    timelineSub = room.client.onTimelineEvent.stream.listen(
+      (event) => _handleEventUpdate(
+        event,
+        EventUpdateType.timeline,
+      ),
+    );
+    historySub = room.client.onHistoryEvent.stream.listen(
+      (event) => _handleEventUpdate(
+        event,
+        EventUpdateType.history,
+      ),
+    );
 
     // If the timeline is limited we want to clear our events cache
     roomSub = room.client.onSync.stream
@@ -278,6 +343,8 @@ class Timeline {
 
     sessionIdReceivedSub =
         room.onSessionKeyReceived.stream.listen(_sessionKeyReceived);
+    cancelSendEventSub =
+        room.client.onCancelSendEvent.stream.listen(_cleanUpCancelledEvent);
 
     // we want to populate our aggregated events
     for (final e in events) {
@@ -288,6 +355,18 @@ class Timeline {
     if (chunk.nextBatch != '') {
       allowNewEvent = false;
       isFragmentedTimeline = true;
+      // fragmented timelines never read from the database.
+      _fetchedAllDatabaseEvents = true;
+    }
+  }
+
+  void _cleanUpCancelledEvent(String eventId) {
+    final i = _findEvent(event_id: eventId);
+    if (i < events.length) {
+      removeAggregatedEvent(events[i]);
+      events.removeAt(i);
+      onRemove?.call(i);
+      onUpdate?.call();
     }
   }
 
@@ -301,11 +380,15 @@ class Timeline {
   /// Don't forget to call this before you dismiss this object!
   void cancelSubscriptions() {
     // ignore: discarded_futures
-    sub?.cancel();
+    timelineSub?.cancel();
+    // ignore: discarded_futures
+    historySub?.cancel();
     // ignore: discarded_futures
     roomSub?.cancel();
     // ignore: discarded_futures
     sessionIdReceivedSub?.cancel();
+    // ignore: discarded_futures
+    cancelSendEventSub?.cancel();
   }
 
   void _sessionKeyReceived(String sessionId) async {
@@ -320,7 +403,6 @@ class Timeline {
             events[i].messageType == MessageTypes.BadEncrypted &&
             events[i].content['session_id'] == sessionId) {
           events[i] = await encryption.decryptRoomEvent(
-            room.id,
             events[i],
             store: true,
             updateType: EventUpdateType.history,
@@ -391,7 +473,7 @@ class Timeline {
     for (i = 0; i < events.length; i++) {
       final searchHaystack = <String>{events[i].eventId};
 
-      final txnid = events[i].unsigned?.tryGet<String>('transaction_id');
+      final txnid = events[i].transactionId;
       if (txnid != null) {
         searchHaystack.add(txnid);
       }
@@ -403,11 +485,12 @@ class Timeline {
   }
 
   void _removeEventFromSet(Set<Event> eventSet, Event event) {
-    eventSet.removeWhere((e) =>
-        e.matchesEventOrTransactionId(event.eventId) ||
-        event.unsigned != null &&
-            e.matchesEventOrTransactionId(
-                event.unsigned?.tryGet<String>('transaction_id')));
+    eventSet.removeWhere(
+      (e) =>
+          e.matchesEventOrTransactionId(event.eventId) ||
+          event.unsigned != null &&
+              e.matchesEventOrTransactionId(event.transactionId),
+    );
   }
 
   void addAggregatedEvent(Event event) {
@@ -431,8 +514,8 @@ class Timeline {
 
   void removeAggregatedEvent(Event event) {
     aggregatedEvents.remove(event.eventId);
-    if (event.unsigned != null) {
-      aggregatedEvents.remove(event.unsigned?['transaction_id']);
+    if (event.transactionId != null) {
+      aggregatedEvents.remove(event.transactionId);
     }
     for (final types in aggregatedEvents.values) {
       for (final events in types.values) {
@@ -441,82 +524,65 @@ class Timeline {
     }
   }
 
-  void _handleEventUpdate(EventUpdate eventUpdate, {bool update = true}) {
+  void _handleEventUpdate(
+    Event event,
+    EventUpdateType type, {
+    bool update = true,
+  }) {
     try {
-      if (eventUpdate.roomID != room.id) return;
+      if (event.roomId != room.id) return;
 
-      if (eventUpdate.type != EventUpdateType.timeline &&
-          eventUpdate.type != EventUpdateType.history) {
+      if (type != EventUpdateType.timeline && type != EventUpdateType.history) {
         return;
       }
 
-      if (eventUpdate.type == EventUpdateType.timeline) {
+      if (type == EventUpdateType.timeline) {
         onNewEvent?.call();
       }
 
       if (!allowNewEvent) return;
 
-      final status = eventStatusFromInt(eventUpdate.content['status'] ??
-          (eventUpdate.content['unsigned'] is Map<String, dynamic>
-              ? eventUpdate.content['unsigned'][messageSendingStatusKey]
-              : null) ??
-          EventStatus.synced.intValue);
+      final status = event.status;
 
-      if (status.isRemoved) {
-        final i = _findEvent(event_id: eventUpdate.content['event_id']);
-        if (i < events.length) {
-          removeAggregatedEvent(events[i]);
-          events.removeAt(i);
-          onRemove?.call(i);
+      final i = _findEvent(
+        event_id: event.eventId,
+        unsigned_txid: event.transactionId,
+      );
+
+      if (i < events.length) {
+        // if the old status is larger than the new one, we also want to preserve the old status
+        final oldStatus = events[i].status;
+        events[i] = event;
+        // do we preserve the status? we should allow 0 -> -1 updates and status increases
+        if ((latestEventStatus(status, oldStatus) == oldStatus) &&
+            !(status.isError && oldStatus.isSending)) {
+          events[i].status = oldStatus;
         }
+        addAggregatedEvent(events[i]);
+        onChange?.call(i);
       } else {
-        final i = _findEvent(
-            event_id: eventUpdate.content['event_id'],
-            unsigned_txid: eventUpdate.content['unsigned'] is Map
-                ? eventUpdate.content['unsigned']['transaction_id']
-                : null);
-
-        if (i < events.length) {
-          // if the old status is larger than the new one, we also want to preserve the old status
-          final oldStatus = events[i].status;
-          events[i] = Event.fromJson(
-            eventUpdate.content,
-            room,
-          );
-          // do we preserve the status? we should allow 0 -> -1 updates and status increases
-          if ((latestEventStatus(status, oldStatus) == oldStatus) &&
-              !(status.isError && oldStatus.isSending)) {
-            events[i].status = oldStatus;
-          }
-          addAggregatedEvent(events[i]);
-          onChange?.call(i);
-        } else {
-          final newEvent = Event.fromJson(
-            eventUpdate.content,
-            room,
-          );
-
-          if (eventUpdate.type == EventUpdateType.history &&
-              events.indexWhere(
-                      (e) => e.eventId == eventUpdate.content['event_id']) !=
-                  -1) return;
-          var index = events.length;
-          if (eventUpdate.type == EventUpdateType.history) {
-            events.add(newEvent);
-          } else {
-            index = events.firstIndexWhereNotError;
-            events.insert(index, newEvent);
-          }
-          onInsert?.call(index);
-
-          addAggregatedEvent(newEvent);
+        if (type == EventUpdateType.history &&
+            events.indexWhere(
+                  (e) => e.eventId == event.eventId,
+                ) !=
+                -1) {
+          return;
         }
+        var index = events.length;
+        if (type == EventUpdateType.history) {
+          events.add(event);
+        } else {
+          index = events.firstIndexWhereNotError;
+          events.insert(index, event);
+        }
+        onInsert?.call(index);
+
+        addAggregatedEvent(event);
       }
 
       // Handle redaction events
-      if (eventUpdate.content['type'] == EventTypes.Redaction) {
-        final index =
-            _findEvent(event_id: eventUpdate.content.tryGet<String>('redacts'));
+      if (event.type == EventTypes.Redaction) {
+        final index = _findEvent(event_id: event.redacts);
         if (index < events.length) {
           removeAggregatedEvent(events[index]);
 
@@ -530,10 +596,7 @@ class Timeline {
             }
           }
 
-          events[index].setRedactionEvent(Event.fromJson(
-            eventUpdate.content,
-            room,
-          ));
+          events[index].setRedactionEvent(event);
           onChange?.call(index);
         }
       }
@@ -635,7 +698,7 @@ class Timeline {
         for (final matrixEvent in resp.chunk) {
           var event = Event.fromMatrixEvent(matrixEvent, room);
           if (event.type == EventTypes.Encrypted && encryption != null) {
-            event = await encryption.decryptRoomEvent(room.id, event);
+            event = await encryption.decryptRoomEvent(event);
             if (event.type == EventTypes.Encrypted &&
                 event.messageType == MessageTypes.BadEncrypted &&
                 event.content['can_request_session'] == true) {

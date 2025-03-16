@@ -19,18 +19,22 @@
 import 'package:matrix/matrix.dart';
 
 /// Represents a Matrix User which may be a participant in a Matrix Room.
-class User extends Event {
+class User extends StrippedStateEvent {
+  final Room room;
+  final Map<String, Object?>? prevContent;
+  final DateTime? originServerTs;
+
   factory User(
     String id, {
     String? membership,
     String? displayName,
     String? avatarUrl,
+    DateTime? originServerTs,
     required Room room,
   }) {
     return User.fromState(
       stateKey: id,
       senderId: id,
-      eventId: 'fake_event',
       content: {
         if (membership != null) 'membership': membership,
         if (displayName != null) 'displayname': displayName,
@@ -38,20 +42,18 @@ class User extends Event {
       },
       typeKey: EventTypes.RoomMember,
       room: room,
-      originServerTs: DateTime.now(),
+      originServerTs: originServerTs,
     );
   }
 
   User.fromState({
-    super.prevContent,
     required String super.stateKey,
     super.content = const {},
     required String typeKey,
-    required super.eventId,
     required super.senderId,
-    required super.originServerTs,
-    super.unsigned,
-    required super.room,
+    required this.room,
+    this.originServerTs,
+    this.prevContent,
   }) : super(
           type: typeKey,
         );
@@ -74,12 +76,15 @@ class User extends Event {
   /// invite
   /// leave
   /// ban
-  Membership get membership => Membership.values.firstWhere((e) {
-        if (content['membership'] != null) {
-          return e.toString() == 'Membership.${content['membership']}';
-        }
-        return false;
-      }, orElse: () => Membership.join);
+  Membership get membership => Membership.values.firstWhere(
+        (e) {
+          if (content['membership'] != null) {
+            return e.toString() == 'Membership.${content['membership']}';
+          }
+          return false;
+        },
+        orElse: () => Membership.join,
+      );
 
   /// The avatar if the user has one.
   Uri? get avatarUrl {
@@ -96,10 +101,11 @@ class User extends Event {
   /// the first character of each word becomes uppercase.
   /// If [mxidLocalPartFallback] is true, then the local part of the mxid will be shown
   /// if there is no other displayname available. If not then this will return "Unknown user".
-  String calcDisplayname(
-      {bool? formatLocalpart,
-      bool? mxidLocalPartFallback,
-      MatrixLocalizations i18n = const MatrixDefaultLocalizations()}) {
+  String calcDisplayname({
+    bool? formatLocalpart,
+    bool? mxidLocalPartFallback,
+    MatrixLocalizations i18n = const MatrixDefaultLocalizations(),
+  }) {
     formatLocalpart ??= room.client.formatLocalpart;
     mxidLocalPartFallback ??= room.client.mxidLocalPartFallback;
     final displayName = this.displayName;
@@ -205,10 +211,12 @@ class User extends Event {
 
     // get all the users with the same display name
     final allUsersWithSameDisplayname = room.getParticipants();
-    allUsersWithSameDisplayname.removeWhere((user) =>
-        user.id == id ||
-        (user.displayName?.isEmpty ?? true) ||
-        user.displayName != displayName);
+    allUsersWithSameDisplayname.removeWhere(
+      (user) =>
+          user.id == id ||
+          (user.displayName?.isEmpty ?? true) ||
+          user.displayName != displayName,
+    );
     if (allUsersWithSameDisplayname.isEmpty) {
       return identifier;
     }
@@ -241,3 +249,15 @@ class User extends Event {
 const _maximumHashLength = 10000;
 String _hash(String s) =>
     (s.codeUnits.fold<int>(0, (a, b) => a + b) % _maximumHashLength).toString();
+
+extension FromStrippedStateEventExtension on StrippedStateEvent {
+  User asUser(Room room) => User.fromState(
+        // state key should always be set for member events
+        stateKey: stateKey!,
+        content: content,
+        typeKey: type,
+        senderId: senderId,
+        room: room,
+        originServerTs: null,
+      );
+}

@@ -17,40 +17,54 @@
  */
 
 /// Matrix SDK written in pure Dart.
-library matrix;
+library;
 
 export 'matrix_api_lite.dart';
 
+export 'fake_matrix_api.dart' show FakeMatrixApi;
+
 export 'src/client.dart';
 export 'src/database/database_api.dart';
-export 'src/database/hive_database.dart';
 export 'src/database/matrix_sdk_database.dart';
 export 'src/database/hive_collections_database.dart';
 export 'src/database/sqflite_encryption_helper.dart';
 export 'src/event.dart';
 export 'src/presence.dart';
 export 'src/event_status.dart';
-export 'src/voip/call.dart';
-export 'src/voip/group_call.dart';
+export 'src/voip/call_session.dart';
+export 'src/voip/group_call_session.dart';
 export 'src/voip/voip.dart';
-export 'src/voip/voip_content.dart';
-export 'src/voip/conn_tester.dart';
-export 'src/voip/utils.dart';
-export 'src/voip/voip_room_extension.dart';
+export 'src/voip/backend/livekit_backend.dart';
+export 'src/voip/backend/call_backend_model.dart';
+export 'src/voip/backend/mesh_backend.dart';
+export 'src/voip/models/call_events.dart';
+export 'src/voip/models/webrtc_delegate.dart';
+export 'src/voip/models/call_participant.dart';
+export 'src/voip/models/key_provider.dart';
+export 'src/voip/models/matrixrtc_call_event.dart';
+export 'src/voip/utils/conn_tester.dart';
+export 'src/voip/utils/voip_constants.dart';
+export 'src/voip/utils/rtc_candidate_extension.dart';
+export 'src/voip/utils/famedly_call_extension.dart';
+export 'src/voip/utils/types.dart';
+export 'src/voip/utils/wrapped_media_stream.dart';
 export 'src/room.dart';
 export 'src/timeline.dart';
 export 'src/user.dart';
+export 'src/utils/cached_profile_information.dart';
 export 'src/utils/commands_extension.dart';
 export 'src/utils/crypto/encrypted_file.dart';
 export 'src/utils/device_keys_list.dart';
 export 'src/utils/event_update.dart';
 export 'src/utils/http_timeout.dart';
+export 'src/utils/event_localizations.dart';
 export 'src/utils/image_pack_extension.dart';
 export 'src/utils/matrix_default_localizations.dart';
 export 'src/utils/matrix_file.dart';
 export 'src/utils/matrix_id_string_extension.dart';
 export 'src/utils/matrix_localizations.dart';
 export 'src/utils/native_implementations.dart';
+export 'src/utils/room_enums.dart';
 export 'src/utils/room_member_change_type.dart';
 export 'src/utils/push_notification.dart';
 export 'src/utils/pushrule_evaluator.dart';
@@ -59,6 +73,7 @@ export 'src/utils/sync_update_extension.dart';
 export 'src/utils/to_device_event.dart';
 export 'src/utils/uia_request.dart';
 export 'src/utils/uri_extension.dart';
+export 'src/models/login_type.dart';
 
 export 'msc_extensions/extension_recent_emoji/recent_emoji.dart';
 export 'msc_extensions/msc_3935_cute_events/msc_3935_cute_events.dart';

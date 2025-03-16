@@ -23,9 +23,9 @@
 
 import 'package:test/test.dart';
 
+import 'package:matrix/fake_matrix_api.dart';
 import 'package:matrix/msc_extensions/msc_3814_dehydrated_devices/api.dart';
 import '../fake_client.dart';
-import '../fake_matrix_api.dart';
 
 void main() {
   /// All Tests related to device keys
@@ -34,18 +34,23 @@ void main() {
       final client = await getClient();
 
       final ret = await client.uploadDehydratedDevice(
-          deviceId: 'DEHYDDEV',
-          initialDeviceDisplayName: 'DehydratedDevice',
-          deviceData: {'algorithm': 'some.famedly.proprietary.algorith'});
+        deviceId: 'DEHYDDEV',
+        initialDeviceDisplayName: 'DehydratedDevice',
+        deviceData: {'algorithm': 'some.famedly.proprietary.algorith'},
+      );
       expect(
-          FakeMatrixApi.calledEndpoints.containsKey(
-              '/client/unstable/org.matrix.msc3814.v1/dehydrated_device'),
-          true);
+        FakeMatrixApi.calledEndpoints.containsKey(
+          '/client/unstable/org.matrix.msc3814.v1/dehydrated_device',
+        ),
+        true,
+      );
       expect(ret.isNotEmpty, true);
       final device = await client.getDehydratedDevice();
       expect(device.deviceId, 'DEHYDDEV');
-      expect(device.deviceData?['algorithm'],
-          'some.famedly.proprietary.algorithm');
+      expect(
+        device.deviceData?['algorithm'],
+        'some.famedly.proprietary.algorithm',
+      );
 
       final events = await client.getDehydratedDeviceEvents(device.deviceId);
       expect(events.events?.length, 1);

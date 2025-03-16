@@ -23,12 +23,10 @@ import 'package:test/test.dart';
 
 import 'package:matrix/matrix.dart';
 import '../fake_client.dart';
-import '../fake_matrix_api.dart';
 
 void main() {
-  group('Online Key Backup', () {
+  group('Online Key Backup', tags: 'olm', () {
     Logs().level = Level.error;
-    var olmEnabled = true;
 
     late Client client;
 
@@ -36,22 +34,13 @@ void main() {
     final sessionId = 'ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU';
     final senderKey = 'JBG7ZaPn54OBC7TuIEiylW3BZ+7WcGQhFBPB9pogbAg';
 
-    test('setupClient', () async {
-      try {
-        await olm.init();
-        olm.get_library_version();
-      } catch (e) {
-        olmEnabled = false;
-        Logs().w('[LibOlm] Failed to load LibOlm', e);
-      }
-      Logs().i('[LibOlm] Enabled: $olmEnabled');
-      if (!olmEnabled) return;
-
+    setUpAll(() async {
+      await olm.init();
+      olm.get_library_version();
       client = await getClient();
     });
 
     test('basic things', () async {
-      if (!olmEnabled) return;
       expect(client.encryption!.keyManager.enabled, true);
       expect(await client.encryption!.keyManager.isCached(), false);
       final handle = client.encryption!.ssss.open();
@@ -61,19 +50,18 @@ void main() {
     });
 
     test('load key', () async {
-      if (!olmEnabled) return;
       client.encryption!.keyManager.clearInboundGroupSessions();
       await client.encryption!.keyManager
           .request(client.getRoomById(roomId)!, sessionId, senderKey);
       expect(
-          client.encryption!.keyManager
-              .getInboundGroupSession(roomId, sessionId)
-              ?.sessionId,
-          sessionId);
+        client.encryption!.keyManager
+            .getInboundGroupSession(roomId, sessionId)
+            ?.sessionId,
+        sessionId,
+      );
     });
 
     test('Load all Room Keys', () async {
-      if (!olmEnabled) return;
       final keyManager = client.encryption!.keyManager;
       const roomId = '!getroomkeys726s6s6q:example.com';
       const sessionId = 'ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU';
@@ -86,7 +74,6 @@ void main() {
     });
 
     test('Load all Keys', () async {
-      if (!olmEnabled) return;
       final keyManager = client.encryption!.keyManager;
       const roomId = '!getallkeys726s6s6q:example.com';
       const sessionId = 'ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU';
@@ -99,7 +86,6 @@ void main() {
     });
 
     test('upload key', () async {
-      if (!olmEnabled) return;
       final session = olm.OutboundGroupSession();
       session.create();
       final inbound = olm.InboundGroupSession();
@@ -119,13 +105,18 @@ void main() {
       };
       FakeMatrixApi.calledEndpoints.clear();
       await client.encryption!.keyManager.setInboundGroupSession(
-          roomId, sessionId, senderKey, sessionPayload,
-          forwarded: true);
+        roomId,
+        sessionId,
+        senderKey,
+        sessionPayload,
+        forwarded: true,
+      );
       var dbSessions = await client.database!.getInboundGroupSessionsToUpload();
       expect(dbSessions.isNotEmpty, true);
       await client.encryption!.keyManager.uploadInboundGroupSessions();
       await FakeMatrixApi.firstWhereValue(
-          '/client/v3/room_keys/keys?version=5');
+        '/client/v3/room_keys/keys?version=5',
+      );
       final payload = FakeMatrixApi
           .calledEndpoints['/client/v3/room_keys/keys?version=5']!.first;
       dbSessions = await client.database!.getInboundGroupSessionsToUpload();
@@ -143,7 +134,6 @@ void main() {
     });
 
     test('dispose client', () async {
-      if (!olmEnabled) return;
       await client.dispose(closeDatabase: false);
     });
   });

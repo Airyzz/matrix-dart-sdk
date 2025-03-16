@@ -6,6 +6,7 @@ on:
 jobs:
   e2ee_test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         homeserver: [synapse, dendrite, conduit]
@@ -14,47 +15,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cat .github/workflows/versions.env >> $GITHUB_ENV
-      - name: Run tests
-        run: |
-          export NETWORK='--network mynet'
-          docker network create mynet
-          # deploy homeserver instance
-          scripts/integration-server-${{matrix.homeserver}}.sh
-          docker run $NETWORK --env GITHUB_ACTIONS="${GITHUB_ACTIONS}" --env HOMESERVER_IMPLEMENTATION="${{matrix.homeserver}}" --env HOMESERVER="${{startsWith('dendrite', matrix.homeserver) && format('{0}:8008', matrix.homeserver) || matrix.homeserver }}" --volume="$(pwd):/workdir" --workdir /workdir ghcr.io/famedly/container-image-flutter/flutter:${{env.flutter_version}} /bin/bash -c "set -e
-          scripts/integration-prepare-alpine.sh
-          # create test user environment variables
-          source scripts/integration-create-environment-variables.sh
-          # properly set the homeserver IP and create test users
-          scripts/integration-prepare-homeserver.sh 
-          # setup OLM
-          scripts/prepare.sh
-          scripts/test_driver.sh"
-
-  # coverage is done on the flutter-linux image because we setup olm there
-  # coverage_without_olm is done on dart images because why not :D
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: cat .github/workflows/versions.env >> $GITHUB_ENV
-      - uses: subosito/flutter-action@48cafc24713cca54bbe03cdc3a423187d413aafa
+      - uses: dart-lang/setup-dart@a57a6c04cf7d4840e88432aad6281d1e125f0d46
         with:
-          flutter-version: ${{ env.flutter_version }}
-          cache: true
+          sdk: ${{ env.dart_version }}
       - name: Run tests
         run: |
-          sed -i 's/#flutter_test/flutter_test/g' pubspec.yaml
-          rm -r example
-          ./scripts/prepare.sh
-          ./scripts/test.sh
-      - name: Ensure SDK compiles on web
-        run: |
-          pushd web_test
-          dart pub get
-          dart run webdev build
+          export HOMESERVER_IMPLEMENTATION=${{matrix.homeserver}}
+          export HOMESERVER="localhost:80"
+          scripts/integration-server-${{matrix.homeserver}}.sh 2>&1 > /dev/null &
+          sudo apt-get update && sudo apt-get install --no-install-recommends --no-install-suggests -y libolm3 libssl3 sqlite3 libsqlite3-dev
+          source scripts/integration-create-environment-variables.sh
+          scripts/integration-prepare-homeserver.sh
+          scripts/prepare.sh
+          scripts/test_driver.sh
 
   coverage_without_olm:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       NO_OLM: 1
     steps:
@@ -65,10 +42,105 @@ jobs:
           sdk: ${{ env.dart_version }}
       - name: Run tests
         run: |
-          apt-get update && apt-get install --no-install-recommends --no-install-suggests -y curl lcov python3 python3-distutils libsqlite3-0 libsqlite3-dev
-          curl -o /bin/lcov_cobertura.py https://raw.githubusercontent.com/eriwen/lcov-to-cobertura-xml/master/lcov_cobertura/lcov_cobertura.py && sed 's/env python/env python3/' -i /bin/lcov_cobertura.py && chmod +x /bin/lcov_cobertura.py
-          dart pub get
+          sudo apt-get update && sudo apt-get install --no-install-recommends --no-install-suggests -y lcov libsqlite3-0 libsqlite3-dev
           ./scripts/test.sh
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage_without_olm
+          path: coverage_dir/
+          retention-days: 1
+
+  coverage:
+    #runs-on: arm-ubuntu-latest-16core
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: cat .github/workflows/versions.env >> $GITHUB_ENV
+      - uses: dart-lang/setup-dart@a57a6c04cf7d4840e88432aad6281d1e125f0d46
+        with:
+          sdk: ${{ env.dart_version }}
+          #architecture: "arm64"
+      - name: Run tests
+        run: |
+          sudo apt-get update && sudo apt-get install --no-install-recommends --no-install-suggests -y lcov libsqlite3-0 libsqlite3-dev libolm3 libssl3
+          ./scripts/test.sh
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage
+          path: coverage_dir/
+          retention-days: 1
+
+  merge_coverage:
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [coverage, coverage_without_olm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+      - name: Merge lcov files
+        run: |
+          sudo apt-get -y install lcov
+          lcov -a coverage/lcov.info -a coverage_without_olm/lcov.info -o merged.info
+          genhtml merged.info -o merged
+          echo $(lcov --summary merged.info | grep 'lines......:') >> $GITHUB_STEP_SUMMARY
+      - name: Codecov - Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{secrets.CODECOV_TOKEN}}
+          files: ./merged.info, ./coverage/lcov.info, ./coverage_without_olm/lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merged
+          path: merged/
+          retention-days: 1
+
+  review_app_coverage:
+    if: github.event_name == 'pull_request'
+    needs: [merge_coverage]
+    secrets: inherit
+    uses: famedly/frontend-ci-templates/.github/workflows/review-app.yml@main
+    with:
+      projectname: "matrix-dart-sdk-coverage"
+      pr: ${{ github.event.pull_request.number }}
+      environment: "review"
+      artifact-name: "merged"
+
+  dart_web_compatible:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: cat .github/workflows/versions.env >> $GITHUB_ENV
+      - uses: subosito/flutter-action@48cafc24713cca54bbe03cdc3a423187d413aafa
+        with:
+          flutter-version: ${{ env.flutter_version }}
+          cache: true
+      - name: Ensure SDK compiles on web
+        run: |
+          pushd web_test
+          dart pub get
+          dart run webdev build
+
+  database_web_tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NO_OLM: 1
+    steps:
+      - uses: actions/checkout@v4
+      - run: cat .github/workflows/versions.env >> $GITHUB_ENV
+      - uses: dart-lang/setup-dart@a57a6c04cf7d4840e88432aad6281d1e125f0d46
+        with:
+          sdk: ${{ env.dart_version }}
+      - uses: browser-actions/setup-chrome@v1
+      - name: Run tests
+        run: |
+          dart pub get
+          dart test test/box_test.dart --platform chrome
 
   pub-dev-dry-run:
     runs-on: ubuntu-latest

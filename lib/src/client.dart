@@ -31,6 +31,8 @@ import 'package:random_string/random_string.dart';
 
 import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
+import 'package:matrix/matrix_api_lite/generated/fixed_model.dart';
+import 'package:matrix/msc_extensions/msc_unpublished_custom_refresh_token_lifetime/msc_unpublished_custom_refresh_token_lifetime.dart';
 import 'package:matrix/src/models/timeline_chunk.dart';
 import 'package:matrix/src/utils/cached_stream_controller.dart';
 import 'package:matrix/src/utils/client_init_exception.dart';
@@ -40,6 +42,8 @@ import 'package:matrix/src/utils/run_benchmarked.dart';
 import 'package:matrix/src/utils/run_in_root.dart';
 import 'package:matrix/src/utils/sync_update_item_count.dart';
 import 'package:matrix/src/utils/try_get_push_rule.dart';
+import 'package:matrix/src/utils/versions_comparator.dart';
+import 'package:matrix/src/voip/utils/async_cache_try_fetch.dart';
 
 typedef RoomSorter = int Function(Room a, Room b);
 
@@ -69,7 +73,8 @@ class Client extends MatrixApi {
 
   DatabaseApi? get database => _database;
 
-  Encryption? encryption;
+  Encryption? get encryption => _encryption;
+  Encryption? _encryption;
 
   Set<KeyVerificationMethod> verificationMethods;
 
@@ -79,33 +84,38 @@ class Client extends MatrixApi {
 
   Set<String> supportedLoginTypes;
 
-  int sendMessageTimeoutSeconds;
-
   bool requestHistoryOnLimitedTimeline;
 
   final bool formatLocalpart;
 
   final bool mxidLocalPartFallback;
 
-  bool shareKeysWithUnverifiedDevices;
+  ShareKeysWith shareKeysWith;
 
   Future<void> Function(Client client)? onSoftLogout;
 
-  DateTime? accessTokenExpiresAt;
+  DateTime? get accessTokenExpiresAt => _accessTokenExpiresAt;
+  DateTime? _accessTokenExpiresAt;
 
   // For CommandsClientExtension
-  final Map<String, FutureOr<String?> Function(CommandArgs)> commands = {};
+  final Map<String, CommandExecutionCallback> commands = {};
   final Filter syncFilter;
 
   final NativeImplementations nativeImplementations;
 
-  String? syncFilterId;
+  String? _syncFilterId;
+
+  String? get syncFilterId => _syncFilterId;
+
+  final bool convertLinebreaksInFormatting;
 
   final ComputeCallback? compute;
 
   @Deprecated('Use [nativeImplementations] instead')
   Future<T> runInBackground<T, U>(
-      FutureOr<T> Function(U arg) function, U arg) async {
+    FutureOr<T> Function(U arg) function,
+    U arg,
+  ) async {
     final compute = this.compute;
     if (compute != null) {
       return await compute(function, arg);
@@ -115,8 +125,30 @@ class Client extends MatrixApi {
 
   final Duration sendTimelineEventTimeout;
 
+  /// The timeout until a typing indicator gets removed automatically.
+  final Duration typingIndicatorTimeout;
+
+  DiscoveryInformation? _wellKnown;
+
+  /// the cached .well-known file updated using [getWellknown]
+  DiscoveryInformation? get wellKnown => _wellKnown;
+
+  /// The homeserver this client is communicating with.
+  ///
+  /// In case the [homeserver]'s host differs from the previous value, the
+  /// [wellKnown] cache will be invalidated.
+  @override
+  set homeserver(Uri? homeserver) {
+    if (this.homeserver != null && homeserver?.host != this.homeserver?.host) {
+      _wellKnown = null;
+      unawaited(database?.storeWellKnown(null));
+    }
+    super.homeserver = homeserver;
+  }
+
   Future<MatrixImageFileResizedResponse?> Function(
-      MatrixImageFileResizeArguments)? customImageResizer;
+    MatrixImageFileResizeArguments,
+  )? customImageResizer;
 
   /// Create a client
   /// [clientName] = unique identifier of this client
@@ -174,7 +206,8 @@ class Client extends MatrixApi {
     Set<String>? roomPreviewLastEvents,
     this.pinUnreadRooms = false,
     this.pinInvitedRooms = true,
-    this.sendMessageTimeoutSeconds = 60,
+    @Deprecated('Use [sendTimelineEventTimeout] instead.')
+    int? sendMessageTimeoutSeconds,
     this.requestHistoryOnLimitedTimeline = false,
     Set<String>? supportedLoginTypes,
     this.mxidLocalPartFallback = true,
@@ -183,9 +216,10 @@ class Client extends MatrixApi {
     NativeImplementations nativeImplementations = NativeImplementations.dummy,
     Level? logLevel,
     Filter? syncFilter,
+    Duration defaultNetworkRequestTimeout = const Duration(seconds: 35),
     this.sendTimelineEventTimeout = const Duration(minutes: 1),
     this.customImageResizer,
-    this.shareKeysWithUnverifiedDevices = true,
+    this.shareKeysWith = ShareKeysWith.crossVerifiedIfEnabled,
     this.enableDehydratedDevices = false,
     this.receiptsPublicByDefault = true,
 
@@ -195,6 +229,16 @@ class Client extends MatrixApi {
     /// most common reason for soft logouts.
     /// You can also perform a new login here by passing the existing deviceId.
     this.onSoftLogout,
+
+    /// Experimental feature which allows to send a custom refresh token
+    /// lifetime to the server which overrides the default one. Needs server
+    /// support.
+    this.customRefreshTokenLifetime,
+    this.typingIndicatorTimeout = const Duration(seconds: 30),
+
+    /// When sending a formatted message, converting linebreaks in markdown to
+    /// <br/> tags:
+    this.convertLinebreaksInFormatting = true,
   })  : syncFilter = syncFilter ??
             Filter(
               room: RoomFilter(
@@ -210,8 +254,11 @@ class Client extends MatrixApi {
             ? NativeImplementationsIsolate(compute)
             : nativeImplementations,
         super(
-            httpClient: FixedTimeoutHttpClient(
-                httpClient ?? http.Client(), Duration(seconds: 35))) {
+          httpClient: FixedTimeoutHttpClient(
+            httpClient ?? http.Client(),
+            defaultNetworkRequestTimeout,
+          ),
+        ) {
     if (logLevel != null) Logs().level = logLevel;
     importantStateEvents.addAll([
       EventTypes.RoomName,
@@ -219,8 +266,8 @@ class Client extends MatrixApi {
       EventTypes.Encryption,
       EventTypes.RoomCanonicalAlias,
       EventTypes.RoomTombstone,
-      EventTypes.spaceChild,
-      EventTypes.spaceParent,
+      EventTypes.SpaceChild,
+      EventTypes.SpaceParent,
       EventTypes.RoomCreate,
     ]);
     roomPreviewLastEvents.addAll([
@@ -231,13 +278,14 @@ class Client extends MatrixApi {
       EventTypes.CallAnswer,
       EventTypes.CallReject,
       EventTypes.CallHangup,
-      EventTypes.GroupCallPrefix,
-      EventTypes.GroupCallMemberPrefix,
+      EventTypes.GroupCallMember,
     ]);
 
     // register all the default commands
     registerDefaultCommands();
   }
+
+  Duration? customRefreshTokenLifetime;
 
   /// Fetches the refreshToken from the database and tries to get a new
   /// access token from the server and then stores it correctly. Unlike the
@@ -258,14 +306,17 @@ class Client extends MatrixApi {
       throw Exception('Cannot refresh access token when not logged in');
     }
 
-    final tokenResponse = await refresh(refreshToken);
+    final tokenResponse = await refreshWithCustomRefreshTokenLifetime(
+      refreshToken,
+      refreshTokenLifetimeMs: customRefreshTokenLifetime?.inMilliseconds,
+    );
 
     accessToken = tokenResponse.accessToken;
     final expiresInMs = tokenResponse.expiresInMs;
     final tokenExpiresAt = expiresInMs == null
         ? null
         : DateTime.now().add(Duration(milliseconds: expiresInMs));
-    accessTokenExpiresAt = tokenExpiresAt;
+    _accessTokenExpiresAt = tokenExpiresAt;
     await database?.updateClient(
       homeserverUrl,
       tokenResponse.accessToken,
@@ -287,7 +338,8 @@ class Client extends MatrixApi {
   String? _userID;
 
   /// This points to the position in the synchronization history.
-  String? prevBatch;
+  String? get prevBatch => _prevBatch;
+  String? _prevBatch;
 
   /// The device ID is an unique identifier for this device.
   String? get deviceID => _deviceID;
@@ -359,10 +411,11 @@ class Client extends MatrixApi {
 
   void _updatePushrules() {
     final ruleset = TryGetPushRule.tryFromJson(
-        _accountData[EventTypes.PushRules]
-                ?.content
-                .tryGetMap<String, Object?>('global') ??
-            {});
+      _accountData[EventTypes.PushRules]
+              ?.content
+              .tryGetMap<String, Object?>('global') ??
+          {},
+    );
     _pushruleEvaluator = PushruleEvaluator.fromRuleset(ruleset);
   }
 
@@ -436,8 +489,12 @@ class Client extends MatrixApi {
     String MatrixIdOrDomain,
   ) async {
     try {
-      final response = await httpClient.get(Uri.https(
-          MatrixIdOrDomain.domain ?? '', '/.well-known/matrix/client'));
+      final response = await httpClient.get(
+        Uri.https(
+          MatrixIdOrDomain.domain ?? '',
+          '/.well-known/matrix/client',
+        ),
+      );
       var respBody = response.body;
       try {
         respBody = utf8.decode(response.bodyBytes);
@@ -451,7 +508,8 @@ class Client extends MatrixApi {
       // provide a reasonable fallback.
       return DiscoveryInformation(
         mHomeserver: HomeserverInformation(
-            baseUrl: Uri.https(MatrixIdOrDomain.domain ?? '', '')),
+          baseUrl: Uri.https(MatrixIdOrDomain.domain ?? '', ''),
+        ),
       );
     }
   }
@@ -490,16 +548,18 @@ class Client extends MatrixApi {
       final versions = await getVersions();
       if (!versions.versions
           .any((version) => supportedVersions.contains(version))) {
-        throw BadServerVersionsException(
-          versions.versions.toSet(),
-          supportedVersions,
+        Logs().w(
+          'Server supports the versions: ${versions.toString()} but this application is only compatible with ${supportedVersions.toString()}.',
         );
+        assert(false);
       }
 
       final loginTypes = await getLoginFlows() ?? [];
       if (!loginTypes.any((f) => supportedLoginTypes.contains(f.type))) {
         throw BadServerLoginTypesException(
-            loginTypes.map((f) => f.type ?? '').toSet(), supportedLoginTypes);
+          loginTypes.map((f) => f.type).toSet(),
+          supportedLoginTypes,
+        );
       }
 
       return (wellKnown, versions, loginTypes);
@@ -507,6 +567,27 @@ class Client extends MatrixApi {
       homeserver = null;
       rethrow;
     }
+  }
+
+  /// Gets discovery information about the domain. The file may include
+  /// additional keys, which MUST follow the Java package naming convention,
+  /// e.g. `com.example.myapp.property`. This ensures property names are
+  /// suitably namespaced for each application and reduces the risk of
+  /// clashes.
+  ///
+  /// Note that this endpoint is not necessarily handled by the homeserver,
+  /// but by another webserver, to be used for discovering the homeserver URL.
+  ///
+  /// The result of this call is stored in [wellKnown] for later use at runtime.
+  @override
+  Future<DiscoveryInformation> getWellknown() async {
+    final wellKnown = await super.getWellknown();
+
+    // do not reset the well known here, so super call
+    super.homeserver = wellKnown.mHomeserver.baseUrl.stripTrailingSlash();
+    _wellKnown = wellKnown;
+    await database?.storeWellKnown(wellKnown);
+    return wellKnown;
   }
 
   /// Checks to see if a username is available, and valid, for the server.
@@ -522,6 +603,7 @@ class Client extends MatrixApi {
     bool? refreshToken,
     AuthenticationData? auth,
     AccountKind? kind,
+    void Function(InitState)? onInitStateChanged,
   }) async {
     final response = await super.register(
       kind: kind,
@@ -541,7 +623,8 @@ class Client extends MatrixApi {
     final homeserver = this.homeserver;
     if (accessToken == null || deviceId_ == null || homeserver == null) {
       throw Exception(
-          'Registered but token, device ID, user ID or homeserver is null.');
+        'Registered but token, device ID, user ID or homeserver is null.',
+      );
     }
     final expiresInMs = response.expiresInMs;
     final tokenExpiresAt = expiresInMs == null
@@ -549,13 +632,15 @@ class Client extends MatrixApi {
         : DateTime.now().add(Duration(milliseconds: expiresInMs));
 
     await init(
-        newToken: accessToken,
-        newTokenExpiresAt: tokenExpiresAt,
-        newRefreshToken: response.refreshToken,
-        newUserID: userId,
-        newHomeserver: homeserver,
-        newDeviceName: initialDeviceDisplayName ?? '',
-        newDeviceID: deviceId_);
+      newToken: accessToken,
+      newTokenExpiresAt: tokenExpiresAt,
+      newRefreshToken: response.refreshToken,
+      newUserID: userId,
+      newHomeserver: homeserver,
+      newDeviceName: initialDeviceDisplayName ?? '',
+      newDeviceID: deviceId_,
+      onInitStateChanged: onInitStateChanged,
+    );
     return response;
   }
 
@@ -568,7 +653,7 @@ class Client extends MatrixApi {
   /// older server versions.
   @override
   Future<LoginResponse> login(
-    LoginType type, {
+    String type, {
     AuthenticationIdentifier? identifier,
     String? password,
     String? token,
@@ -578,6 +663,7 @@ class Client extends MatrixApi {
     @Deprecated('Deprecated in favour of identifier.') String? user,
     @Deprecated('Deprecated in favour of identifier.') String? medium,
     @Deprecated('Deprecated in favour of identifier.') String? address,
+    void Function(InitState)? onInitStateChanged,
   }) async {
     if (homeserver == null) {
       final domain = identifier is AuthenticationUserIdentifier
@@ -627,6 +713,7 @@ class Client extends MatrixApi {
       newHomeserver: homeserver_,
       newDeviceName: initialDeviceDisplayName ?? '',
       newDeviceID: deviceId_,
+      onInitStateChanged: onInitStateChanged,
     );
     return response;
   }
@@ -665,7 +752,8 @@ class Client extends MatrixApi {
 
   /// Run any request and react on user interactive authentication flows here.
   Future<T> uiaRequestBackground<T>(
-      Future<T> Function(AuthenticationData? auth) request) {
+    Future<T> Function(AuthenticationData? auth) request,
+  ) {
     final completer = Completer<T>();
     UiaRequest? uia;
     uia = UiaRequest(
@@ -727,12 +815,14 @@ class Client extends MatrixApi {
     if (enableEncryption) {
       initialState ??= [];
       if (!initialState.any((s) => s.type == EventTypes.Encryption)) {
-        initialState.add(StateEvent(
-          content: {
-            'algorithm': supportedGroupEncryptionAlgorithms.first,
-          },
-          type: EventTypes.Encryption,
-        ));
+        initialState.add(
+          StateEvent(
+            content: {
+              'algorithm': supportedGroupEncryptionAlgorithms.first,
+            },
+            type: EventTypes.Encryption,
+          ),
+        );
       }
     }
 
@@ -771,6 +861,7 @@ class Client extends MatrixApi {
     HistoryVisibility? historyVisibility,
     bool waitForSync = true,
     bool groupCall = false,
+    bool federated = true,
     Map<String, dynamic>? powerLevelContentOverride,
   }) async {
     enableEncryption ??=
@@ -778,39 +869,45 @@ class Client extends MatrixApi {
     if (enableEncryption) {
       initialState ??= [];
       if (!initialState.any((s) => s.type == EventTypes.Encryption)) {
-        initialState.add(StateEvent(
-          content: {
-            'algorithm': supportedGroupEncryptionAlgorithms.first,
-          },
-          type: EventTypes.Encryption,
-        ));
+        initialState.add(
+          StateEvent(
+            content: {
+              'algorithm': supportedGroupEncryptionAlgorithms.first,
+            },
+            type: EventTypes.Encryption,
+          ),
+        );
       }
     }
     if (historyVisibility != null) {
       initialState ??= [];
       if (!initialState.any((s) => s.type == EventTypes.HistoryVisibility)) {
-        initialState.add(StateEvent(
-          content: {
-            'history_visibility': historyVisibility.text,
-          },
-          type: EventTypes.HistoryVisibility,
-        ));
+        initialState.add(
+          StateEvent(
+            content: {
+              'history_visibility': historyVisibility.text,
+            },
+            type: EventTypes.HistoryVisibility,
+          ),
+        );
       }
     }
     if (groupCall) {
       powerLevelContentOverride ??= {};
-      powerLevelContentOverride['events'] = <String, dynamic>{
-        EventTypes.GroupCallMemberPrefix: 0,
-        EventTypes.GroupCallPrefix: 0,
-      };
+      powerLevelContentOverride['events'] ??= {};
+      powerLevelContentOverride['events'][EventTypes.GroupCallMember] ??=
+          powerLevelContentOverride['events_default'] ?? 0;
     }
+
     final roomId = await createRoom(
-        invite: invite,
-        preset: preset,
-        name: groupName,
-        initialState: initialState,
-        visibility: visibility,
-        powerLevelContentOverride: powerLevelContentOverride);
+      creationContent: federated ? null : {'m.federate': false},
+      invite: invite,
+      preset: preset,
+      name: groupName,
+      initialState: initialState,
+      visibility: visibility,
+      powerLevelContentOverride: powerLevelContentOverride,
+    );
 
     if (waitForSync) {
       if (getRoomById(roomId) == null) {
@@ -824,8 +921,12 @@ class Client extends MatrixApi {
   /// Wait for the room to appear into the enabled section of the room sync.
   /// By default, the function will listen for room in invite, join and leave
   /// sections of the sync.
-  Future<SyncUpdate> waitForRoomInSync(String roomId,
-      {bool join = false, bool invite = false, bool leave = false}) async {
+  Future<SyncUpdate> waitForRoomInSync(
+    String roomId, {
+    bool join = false,
+    bool invite = false,
+    bool leave = false,
+  }) async {
     if (!join && !invite && !leave) {
       join = true;
       invite = true;
@@ -833,10 +934,12 @@ class Client extends MatrixApi {
     }
 
     // Wait for the next sync where this room appears.
-    final syncUpdate = await onSync.stream.firstWhere((sync) =>
-        invite && (sync.rooms?.invite?.containsKey(roomId) ?? false) ||
-        join && (sync.rooms?.join?.containsKey(roomId) ?? false) ||
-        leave && (sync.rooms?.leave?.containsKey(roomId) ?? false));
+    final syncUpdate = await onSync.stream.firstWhere(
+      (sync) =>
+          invite && (sync.rooms?.invite?.containsKey(roomId) ?? false) ||
+          join && (sync.rooms?.join?.containsKey(roomId) ?? false) ||
+          leave && (sync.rooms?.leave?.containsKey(roomId) ?? false),
+    );
 
     // Wait for this sync to be completely processed.
     await onSyncStatus.stream.firstWhere(
@@ -863,15 +966,16 @@ class Client extends MatrixApi {
   /// room as a space with `room.toSpace()`.
   ///
   /// https://github.com/matrix-org/matrix-doc/blob/matthew/msc1772/proposals/1772-groups-as-rooms.md
-  Future<String> createSpace(
-      {String? name,
-      String? topic,
-      Visibility visibility = Visibility.public,
-      String? spaceAliasName,
-      List<String>? invite,
-      List<Invite3pid>? invite3pid,
-      String? roomVersion,
-      bool waitForSync = false}) async {
+  Future<String> createSpace({
+    String? name,
+    String? topic,
+    Visibility visibility = Visibility.public,
+    String? spaceAliasName,
+    List<String>? invite,
+    List<Invite3pid>? invite3pid,
+    String? roomVersion,
+    bool waitForSync = false,
+  }) async {
     final id = await createRoom(
       name: name,
       topic: topic,
@@ -891,7 +995,7 @@ class Client extends MatrixApi {
     return id;
   }
 
-  @Deprecated('Use fetchOwnProfile() instead')
+  @Deprecated('Use getUserProfile(userID) instead')
   Future<Profile> get ownProfile => fetchOwnProfile();
 
   /// Returns the user's own displayname and avatar url. In Matrix it is possible that
@@ -899,8 +1003,10 @@ class Client extends MatrixApi {
   /// Tries to get the profile from homeserver first, if failed, falls back to a profile
   /// from a room where the user exists. Set `useServerCache` to true to get any
   /// prior value from this function
-  Future<Profile> fetchOwnProfileFromServer(
-      {bool useServerCache = false}) async {
+  @Deprecated('Use fetchOwnProfile() instead')
+  Future<Profile> fetchOwnProfileFromServer({
+    bool useServerCache = false,
+  }) async {
     try {
       return await getProfileFromUserId(
         userID!,
@@ -909,7 +1015,8 @@ class Client extends MatrixApi {
       );
     } catch (e) {
       Logs().w(
-          '[Matrix] getting profile from homeserver failed, falling back to first room with required profile');
+        '[Matrix] getting profile from homeserver failed, falling back to first room with required profile',
+      );
       return await getProfileFromUserId(
         userID!,
         getFromRooms: true,
@@ -923,64 +1030,86 @@ class Client extends MatrixApi {
   /// This returns the profile from the first room by default, override `getFromRooms`
   /// to false to fetch from homeserver.
   Future<Profile> fetchOwnProfile({
-    bool getFromRooms = true,
-    bool cache = true,
+    @Deprecated('No longer supported') bool getFromRooms = true,
+    @Deprecated('No longer supported') bool cache = true,
   }) =>
-      getProfileFromUserId(
-        userID!,
-        getFromRooms: getFromRooms,
-        cache: cache,
+      getProfileFromUserId(userID!);
+
+  /// Get the combined profile information for this user. First checks for a
+  /// non outdated cached profile before requesting from the server. Cached
+  /// profiles are outdated if they have been cached in a time older than the
+  /// [maxCacheAge] or they have been marked as outdated by an event in the
+  /// sync loop.
+  /// In case of an
+  ///
+  /// [userId] The user whose profile information to get.
+  @override
+  Future<CachedProfileInformation> getUserProfile(
+    String userId, {
+    Duration timeout = const Duration(seconds: 30),
+    Duration maxCacheAge = const Duration(days: 1),
+  }) async {
+    final cachedProfile = await database?.getUserProfile(userId);
+    if (cachedProfile != null &&
+        !cachedProfile.outdated &&
+        DateTime.now().difference(cachedProfile.updated) < maxCacheAge) {
+      return cachedProfile;
+    }
+
+    final ProfileInformation profile;
+    try {
+      profile = await (_userProfileRequests[userId] ??=
+          super.getUserProfile(userId).timeout(timeout));
+    } catch (e) {
+      Logs().d('Unable to fetch profile from server', e);
+      if (cachedProfile == null) rethrow;
+      return cachedProfile;
+    } finally {
+      unawaited(_userProfileRequests.remove(userId));
+    }
+
+    final newCachedProfile = CachedProfileInformation.fromProfile(
+      profile,
+      outdated: false,
+      updated: DateTime.now(),
+    );
+
+    await database?.storeUserProfile(userId, newCachedProfile);
+
+    return newCachedProfile;
+  }
+
+  final Map<String, Future<ProfileInformation>> _userProfileRequests = {};
+
+  final CachedStreamController<String> onUserProfileUpdate =
+      CachedStreamController<String>();
+
+  /// Get the combined profile information for this user from the server or
+  /// from the cache depending on the cache value. Returns a `Profile` object
+  /// including the given userId but without information about how outdated
+  /// the profile is. If you need those, try using `getUserProfile()` instead.
+  Future<Profile> getProfileFromUserId(
+    String userId, {
+    @Deprecated('No longer supported') bool? getFromRooms,
+    @Deprecated('No longer supported') bool? cache,
+    Duration timeout = const Duration(seconds: 30),
+    Duration maxCacheAge = const Duration(days: 1),
+  }) async {
+    CachedProfileInformation? cachedProfileInformation;
+    try {
+      cachedProfileInformation = await getUserProfile(
+        userId,
+        timeout: timeout,
+        maxCacheAge: maxCacheAge,
       );
-
-  final Map<String, ProfileInformation> _profileRoomsCache = {};
-  final Map<String, ProfileInformation> _profileServerCache = {};
-
-  /// Get the combined profile information for this user.
-  /// If [getFromRooms] is true then the profile will first be searched from the
-  /// room memberships. This is unstable if the given user makes use of different displaynames
-  /// and avatars per room, which is common for some bots and bridges.
-  /// If [cache] is true then
-  /// the profile get cached for this session. Please note that then the profile may
-  /// become outdated if the user changes the displayname or avatar in this session.
-  Future<Profile> getProfileFromUserId(String userId,
-      {bool cache = true, bool getFromRooms = true}) async {
-    var profile =
-        getFromRooms ? _profileRoomsCache[userId] : _profileServerCache[userId];
-    if (cache && profile != null) {
-      return Profile(
-        userId: userId,
-        displayName: profile.displayname,
-        avatarUrl: profile.avatarUrl,
-      );
+    } catch (e) {
+      Logs().d('Unable to fetch profile for $userId', e);
     }
 
-    if (getFromRooms) {
-      final room = rooms.firstWhereOrNull((Room room) =>
-          room.getParticipants().indexWhere((User user) => user.id == userId) !=
-          -1);
-      if (room != null) {
-        final user =
-            room.getParticipants().firstWhere((User user) => user.id == userId);
-        final profileFromRooms = Profile(
-          userId: userId,
-          displayName: user.displayName,
-          avatarUrl: user.avatarUrl,
-        );
-        _profileRoomsCache[userId] = ProfileInformation(
-          avatarUrl: profileFromRooms.avatarUrl,
-          displayname: profileFromRooms.displayName,
-        );
-        return profileFromRooms;
-      }
-    }
-    profile = await getUserProfile(userId);
-    if (cache || _profileServerCache.containsKey(userId)) {
-      _profileServerCache[userId] = profile;
-    }
     return Profile(
       userId: userId,
-      displayName: profile.displayname,
-      avatarUrl: profile.avatarUrl,
+      displayName: cachedProfileInformation?.displayname,
+      avatarUrl: cachedProfileInformation?.avatarUrl,
     );
   }
 
@@ -1023,8 +1152,19 @@ class Client extends MatrixApi {
   /// [ArchivedRoom] objects containing the [Room] and the associated [Timeline].
   Future<List<ArchivedRoom>> loadArchiveWithTimeline() async {
     _archivedRooms.clear();
+
+    final filter = jsonEncode(
+      Filter(
+        room: RoomFilter(
+          state: StateFilter(lazyLoadMembers: true),
+          includeLeave: true,
+          timeline: StateFilter(limit: 10),
+        ),
+      ).toJson(),
+    );
+
     final syncResp = await sync(
-      filter: '{"room":{"include_leave":true,"timeline":{"limit":10}}}',
+      filter: filter,
       timeout: _archiveCacheBusterTimeout,
       setPresence: syncPresence,
     );
@@ -1042,9 +1182,10 @@ class Client extends MatrixApi {
     // best indicator we have to sort them. For archived rooms where we don't
     // have any, we move them to the bottom.
     final beginningOfTime = DateTime.fromMillisecondsSinceEpoch(0);
-    _archivedRooms.sort((b, a) =>
-        (a.room.lastEvent?.originServerTs ?? beginningOfTime)
-            .compareTo(b.room.lastEvent?.originServerTs ?? beginningOfTime));
+    _archivedRooms.sort(
+      (b, a) => (a.room.lastEvent?.originServerTs ?? beginningOfTime)
+          .compareTo(b.room.lastEvent?.originServerTs ?? beginningOfTime),
+    );
 
     return _archivedRooms;
   }
@@ -1065,33 +1206,42 @@ class Client extends MatrixApi {
           roomAccountData: roomUpdate.accountData
                   ?.asMap()
                   .map((k, v) => MapEntry(v.type, v)) ??
-              <String, BasicRoomEvent>{},
+              <String, BasicEvent>{},
         );
     // Set membership of room to leave, in the case we got a left room passed, otherwise
     // the left room would have still membership join, which would be wrong for the setState later
     archivedRoom.membership = Membership.leave;
     final timeline = Timeline(
-        room: archivedRoom,
-        chunk: TimelineChunk(
-            events: roomUpdate.timeline?.events?.reversed
-                    .toList() // we display the event in the other sence
-                    .map((e) => Event.fromMatrixEvent(e, archivedRoom))
-                    .toList() ??
-                []));
+      room: archivedRoom,
+      chunk: TimelineChunk(
+        events: roomUpdate.timeline?.events?.reversed
+                .toList() // we display the event in the other sence
+                .map((e) => Event.fromMatrixEvent(e, archivedRoom))
+                .toList() ??
+            [],
+      ),
+    );
 
     archivedRoom.prev_batch = update.timeline?.prevBatch;
 
     final stateEvents = roomUpdate.state;
     if (stateEvents != null) {
-      await _handleRoomEvents(archivedRoom, stateEvents, EventUpdateType.state,
-          store: false);
+      await _handleRoomEvents(
+        archivedRoom,
+        stateEvents,
+        EventUpdateType.state,
+        store: false,
+      );
     }
 
     final timelineEvents = roomUpdate.timeline?.events;
     if (timelineEvents != null) {
-      await _handleRoomEvents(archivedRoom, timelineEvents.reversed.toList(),
-          EventUpdateType.timeline,
-          store: false);
+      await _handleRoomEvents(
+        archivedRoom,
+        timelineEvents.reversed.toList(),
+        EventUpdateType.timeline,
+        store: false,
+      );
     }
 
     for (var i = 0; i < timeline.events.length; i++) {
@@ -1099,10 +1249,7 @@ class Client extends MatrixApi {
       if (archivedRoom.encrypted && archivedRoom.client.encryptionEnabled) {
         if (timeline.events[i].type == EventTypes.Encrypted) {
           await archivedRoom.client.encryption!
-              .decryptRoomEvent(
-                archivedRoom.id,
-                timeline.events[i],
-              )
+              .decryptRoomEvent(timeline.events[i])
               .then(
                 (decrypted) => timeline.events[i] = decrypted,
               );
@@ -1113,18 +1260,264 @@ class Client extends MatrixApi {
     _archivedRooms.add(ArchivedRoom(room: archivedRoom, timeline: timeline));
   }
 
-  final _serverConfigCache = AsyncCache<ServerConfig>(const Duration(hours: 1));
+  final _versionsCache =
+      AsyncCache<GetVersionsResponse>(const Duration(hours: 1));
 
-  /// Gets the config of the content repository, such as upload limit.
-  @override
-  Future<ServerConfig> getConfig() =>
-      _serverConfigCache.fetch(() => super.getConfig());
+  Future<bool> authenticatedMediaSupported() async {
+    final versionsResponse = await _versionsCache.tryFetch(() => getVersions());
+    return versionsResponse.versions.any(
+          (v) => isVersionGreaterThanOrEqualTo(v, 'v1.11'),
+        ) ||
+        versionsResponse.unstableFeatures?['org.matrix.msc3916.stable'] == true;
+  }
 
-  /// Uploads a file and automatically caches it in the database, if it is small enough
-  /// and returns the mxc url.
+  final _serverConfigCache = AsyncCache<MediaConfig>(const Duration(hours: 1));
+
+  /// This endpoint allows clients to retrieve the configuration of the content
+  /// repository, such as upload limitations.
+  /// Clients SHOULD use this as a guide when using content repository endpoints.
+  /// All values are intentionally left optional. Clients SHOULD follow
+  /// the advice given in the field description when the field is not available.
+  ///
+  /// **NOTE:** Both clients and server administrators should be aware that proxies
+  /// between the client and the server may affect the apparent behaviour of content
+  /// repository APIs, for example, proxies may enforce a lower upload size limit
+  /// than is advertised by the server on this endpoint.
   @override
-  Future<Uri> uploadContent(Uint8List file,
-      {String? filename, String? contentType}) async {
+  Future<MediaConfig> getConfig() => _serverConfigCache.tryFetch(
+        () async => (await authenticatedMediaSupported())
+            ? getConfigAuthed()
+            // ignore: deprecated_member_use_from_same_package
+            : super.getConfig(),
+      );
+
+  ///
+  ///
+  /// [serverName] The server name from the `mxc://` URI (the authoritory component)
+  ///
+  ///
+  /// [mediaId] The media ID from the `mxc://` URI (the path component)
+  ///
+  ///
+  /// [allowRemote] Indicates to the server that it should not attempt to fetch the media if
+  /// it is deemed remote. This is to prevent routing loops where the server
+  /// contacts itself.
+  ///
+  /// Defaults to `true` if not provided.
+  ///
+  /// [timeoutMs] The maximum number of milliseconds that the client is willing to wait to
+  /// start receiving data, in the case that the content has not yet been
+  /// uploaded. The default value is 20000 (20 seconds). The content
+  /// repository SHOULD impose a maximum value for this parameter. The
+  /// content repository MAY respond before the timeout.
+  ///
+  ///
+  /// [allowRedirect] Indicates to the server that it may return a 307 or 308 redirect
+  /// response that points at the relevant media content. When not explicitly
+  /// set to `true` the server must return the media content itself.
+  ///
+  @override
+  Future<FileResponse> getContent(
+    String serverName,
+    String mediaId, {
+    bool? allowRemote,
+    int? timeoutMs,
+    bool? allowRedirect,
+  }) async {
+    return (await authenticatedMediaSupported())
+        ? getContentAuthed(
+            serverName,
+            mediaId,
+            timeoutMs: timeoutMs,
+          )
+        // ignore: deprecated_member_use_from_same_package
+        : super.getContent(
+            serverName,
+            mediaId,
+            allowRemote: allowRemote,
+            timeoutMs: timeoutMs,
+            allowRedirect: allowRedirect,
+          );
+  }
+
+  /// This will download content from the content repository (same as
+  /// the previous endpoint) but replace the target file name with the one
+  /// provided by the caller.
+  ///
+  /// {{% boxes/warning %}}
+  /// {{< changed-in v="1.11" >}} This endpoint MAY return `404 M_NOT_FOUND`
+  /// for media which exists, but is after the server froze unauthenticated
+  /// media access. See [Client Behaviour](https://spec.matrix.org/unstable/client-server-api/#content-repo-client-behaviour) for more
+  /// information.
+  /// {{% /boxes/warning %}}
+  ///
+  /// [serverName] The server name from the `mxc://` URI (the authority component).
+  ///
+  ///
+  /// [mediaId] The media ID from the `mxc://` URI (the path component).
+  ///
+  ///
+  /// [fileName] A filename to give in the `Content-Disposition` header.
+  ///
+  /// [allowRemote] Indicates to the server that it should not attempt to fetch the media if
+  /// it is deemed remote. This is to prevent routing loops where the server
+  /// contacts itself.
+  ///
+  /// Defaults to `true` if not provided.
+  ///
+  /// [timeoutMs] The maximum number of milliseconds that the client is willing to wait to
+  /// start receiving data, in the case that the content has not yet been
+  /// uploaded. The default value is 20000 (20 seconds). The content
+  /// repository SHOULD impose a maximum value for this parameter. The
+  /// content repository MAY respond before the timeout.
+  ///
+  ///
+  /// [allowRedirect] Indicates to the server that it may return a 307 or 308 redirect
+  /// response that points at the relevant media content. When not explicitly
+  /// set to `true` the server must return the media content itself.
+  @override
+  Future<FileResponse> getContentOverrideName(
+    String serverName,
+    String mediaId,
+    String fileName, {
+    bool? allowRemote,
+    int? timeoutMs,
+    bool? allowRedirect,
+  }) async {
+    return (await authenticatedMediaSupported())
+        ? getContentOverrideNameAuthed(
+            serverName,
+            mediaId,
+            fileName,
+            timeoutMs: timeoutMs,
+          )
+        // ignore: deprecated_member_use_from_same_package
+        : super.getContentOverrideName(
+            serverName,
+            mediaId,
+            fileName,
+            allowRemote: allowRemote,
+            timeoutMs: timeoutMs,
+            allowRedirect: allowRedirect,
+          );
+  }
+
+  /// Download a thumbnail of content from the content repository.
+  /// See the [Thumbnails](https://spec.matrix.org/unstable/client-server-api/#thumbnails) section for more information.
+  ///
+  /// {{% boxes/note %}}
+  /// Clients SHOULD NOT generate or use URLs which supply the access token in
+  /// the query string. These URLs may be copied by users verbatim and provided
+  /// in a chat message to another user, disclosing the sender's access token.
+  /// {{% /boxes/note %}}
+  ///
+  /// Clients MAY be redirected using the 307/308 responses below to download
+  /// the request object. This is typical when the homeserver uses a Content
+  /// Delivery Network (CDN).
+  ///
+  /// [serverName] The server name from the `mxc://` URI (the authority component).
+  ///
+  ///
+  /// [mediaId] The media ID from the `mxc://` URI (the path component).
+  ///
+  ///
+  /// [width] The *desired* width of the thumbnail. The actual thumbnail may be
+  /// larger than the size specified.
+  ///
+  /// [height] The *desired* height of the thumbnail. The actual thumbnail may be
+  /// larger than the size specified.
+  ///
+  /// [method] The desired resizing method. See the [Thumbnails](https://spec.matrix.org/unstable/client-server-api/#thumbnails)
+  /// section for more information.
+  ///
+  /// [timeoutMs] The maximum number of milliseconds that the client is willing to wait to
+  /// start receiving data, in the case that the content has not yet been
+  /// uploaded. The default value is 20000 (20 seconds). The content
+  /// repository SHOULD impose a maximum value for this parameter. The
+  /// content repository MAY respond before the timeout.
+  ///
+  ///
+  /// [animated] Indicates preference for an animated thumbnail from the server, if possible. Animated
+  /// thumbnails typically use the content types `image/gif`, `image/png` (with APNG format),
+  /// `image/apng`, and `image/webp` instead of the common static `image/png` or `image/jpeg`
+  /// content types.
+  ///
+  /// When `true`, the server SHOULD return an animated thumbnail if possible and supported.
+  /// When `false`, the server MUST NOT return an animated thumbnail. For example, returning a
+  /// static `image/png` or `image/jpeg` thumbnail. When not provided, the server SHOULD NOT
+  /// return an animated thumbnail.
+  ///
+  /// Servers SHOULD prefer to return `image/webp` thumbnails when supporting animation.
+  ///
+  /// When `true` and the media cannot be animated, such as in the case of a JPEG or PDF, the
+  /// server SHOULD behave as though `animated` is `false`.
+  @override
+  Future<FileResponse> getContentThumbnail(
+    String serverName,
+    String mediaId,
+    int width,
+    int height, {
+    Method? method,
+    bool? allowRemote,
+    int? timeoutMs,
+    bool? allowRedirect,
+    bool? animated,
+  }) async {
+    return (await authenticatedMediaSupported())
+        ? getContentThumbnailAuthed(
+            serverName,
+            mediaId,
+            width,
+            height,
+            method: method,
+            timeoutMs: timeoutMs,
+            animated: animated,
+          )
+        // ignore: deprecated_member_use_from_same_package
+        : super.getContentThumbnail(
+            serverName,
+            mediaId,
+            width,
+            height,
+            method: method,
+            timeoutMs: timeoutMs,
+            animated: animated,
+          );
+  }
+
+  /// Get information about a URL for the client. Typically this is called when a
+  /// client sees a URL in a message and wants to render a preview for the user.
+  ///
+  /// {{% boxes/note %}}
+  /// Clients should consider avoiding this endpoint for URLs posted in encrypted
+  /// rooms. Encrypted rooms often contain more sensitive information the users
+  /// do not want to share with the homeserver, and this can mean that the URLs
+  /// being shared should also not be shared with the homeserver.
+  /// {{% /boxes/note %}}
+  ///
+  /// [url] The URL to get a preview of.
+  ///
+  /// [ts] The preferred point in time to return a preview for. The server may
+  /// return a newer version if it does not have the requested version
+  /// available.
+  @override
+  Future<PreviewForUrl> getUrlPreview(Uri url, {int? ts}) async {
+    return (await authenticatedMediaSupported())
+        ? getUrlPreviewAuthed(url, ts: ts)
+        // ignore: deprecated_member_use_from_same_package
+        : super.getUrlPreview(url, ts: ts);
+  }
+
+  /// Uploads a file into the Media Repository of the server and also caches it
+  /// in the local database, if it is small enough.
+  /// Returns the mxc url. Please note, that this does **not** encrypt
+  /// the content. Use `Room.sendFileEvent()` for end to end encryption.
+  @override
+  Future<Uri> uploadContent(
+    Uint8List file, {
+    String? filename,
+    String? contentType,
+  }) async {
     final mediaConfig = await getConfig();
     final maxMediaSize = mediaConfig.mUploadSize;
     if (maxMediaSize != null && maxMediaSize < file.lengthInBytes) {
@@ -1138,7 +1531,10 @@ class Client extends MatrixApi {
     final database = this.database;
     if (database != null && file.length <= database.maxFileSize) {
       await database.storeFile(
-          mxc, file, DateTime.now().millisecondsSinceEpoch);
+        mxc,
+        file,
+        DateTime.now().millisecondsSinceEpoch,
+      );
     }
     return mxc;
   }
@@ -1244,12 +1640,27 @@ class Client extends MatrixApi {
     return pushrules != null ? TryGetPushRule.tryFromJson(pushrules) : null;
   }
 
-  static const Set<String> supportedVersions = {'v1.1', 'v1.2'};
+  static const Set<String> supportedVersions = {
+    'v1.1',
+    'v1.2',
+    'v1.3',
+    'v1.4',
+    'v1.5',
+    'v1.6',
+    'v1.7',
+    'v1.8',
+    'v1.9',
+    'v1.10',
+    'v1.11',
+    'v1.12',
+    'v1.13',
+  };
+
   static const List<String> supportedDirectEncryptionAlgorithms = [
-    AlgorithmTypes.olmV1Curve25519AesSha2
+    AlgorithmTypes.olmV1Curve25519AesSha2,
   ];
   static const List<String> supportedGroupEncryptionAlgorithms = [
-    AlgorithmTypes.megolmV1AesSha2
+    AlgorithmTypes.megolmV1AesSha2,
   ];
   static const int defaultThumbnailSize = 800;
 
@@ -1257,11 +1668,35 @@ class Client extends MatrixApi {
   /// the app receives a new synchronization, this event is called for every signal
   /// to update the GUI. For example, for a new message, it is called:
   /// onRoomEvent( "m.room.message", "!chat_id:server.com", "timeline", {sender: "@bob:server.com", body: "Hello world"} )
+  // ignore: deprecated_member_use_from_same_package
+  @Deprecated(
+    'Use `onTimelineEvent`, `onHistoryEvent` or `onNotification` instead.',
+  )
   final CachedStreamController<EventUpdate> onEvent = CachedStreamController();
+
+  /// A stream of all incoming timeline events for all rooms **after**
+  /// decryption. The events are coming in the same order as they come down from
+  /// the sync.
+  final CachedStreamController<Event> onTimelineEvent =
+      CachedStreamController();
+
+  /// A stream for all incoming historical timeline events **after** decryption
+  /// triggered by a `Room.requestHistory()` call or a method which calls it.
+  final CachedStreamController<Event> onHistoryEvent = CachedStreamController();
+
+  /// A stream of incoming Events **after** decryption which **should** trigger
+  /// a (local) notification. This includes timeline events but also
+  /// invite states. Excluded events are those sent by the user themself or
+  /// not matching the push rules.
+  final CachedStreamController<Event> onNotification = CachedStreamController();
 
   /// The onToDeviceEvent is called when there comes a new to device event. It is
   /// already decrypted if necessary.
   final CachedStreamController<ToDeviceEvent> onToDeviceEvent =
+      CachedStreamController();
+
+  /// Tells you about to-device and room call specific events in sync
+  final CachedStreamController<List<BasicEventWithSender>> onCallEvents =
       CachedStreamController();
 
   /// Called when the login state e.g. user gets logged out.
@@ -1284,7 +1719,8 @@ class Client extends MatrixApi {
 
   /// Callback will be called on presences.
   @Deprecated(
-      'Deprecated, use onPresenceChanged instead which has a timestamp.')
+    'Deprecated, use onPresenceChanged instead which has a timestamp.',
+  )
   final CachedStreamController<Presence> onPresence = CachedStreamController();
 
   /// Callback will be called on presence updates.
@@ -1292,42 +1728,8 @@ class Client extends MatrixApi {
       CachedStreamController();
 
   /// Callback will be called on account data updates.
+  @Deprecated('Use `client.onSync` instead')
   final CachedStreamController<BasicEvent> onAccountData =
-      CachedStreamController();
-
-  /// Will be called on call invites.
-  final CachedStreamController<Event> onCallInvite = CachedStreamController();
-
-  /// Will be called on call hangups.
-  final CachedStreamController<Event> onCallHangup = CachedStreamController();
-
-  /// Will be called on call candidates.
-  final CachedStreamController<Event> onCallCandidates =
-      CachedStreamController();
-
-  /// Will be called on call answers.
-  final CachedStreamController<Event> onCallAnswer = CachedStreamController();
-
-  /// Will be called on call replaces.
-  final CachedStreamController<Event> onCallReplaces = CachedStreamController();
-
-  /// Will be called on select answers.
-  final CachedStreamController<Event> onCallSelectAnswer =
-      CachedStreamController();
-
-  /// Will be called on rejects.
-  final CachedStreamController<Event> onCallReject = CachedStreamController();
-
-  /// Will be called on negotiates.
-  final CachedStreamController<Event> onCallNegotiate =
-      CachedStreamController();
-
-  /// Will be called on Asserted Identity received.
-  final CachedStreamController<Event> onAssertedIdentityReceived =
-      CachedStreamController();
-
-  /// Will be called on SDPStream Metadata changed.
-  final CachedStreamController<Event> onSDPStreamMetadataChangedReceived =
       CachedStreamController();
 
   /// Will be called when another device is requesting session keys for a room.
@@ -1338,17 +1740,21 @@ class Client extends MatrixApi {
   final CachedStreamController<KeyVerification> onKeyVerificationRequest =
       CachedStreamController();
 
-  /// When the library calls an endpoint that needs UIA the `UiaRequest` is passed down this screen.
+  /// When the library calls an endpoint that needs UIA the `UiaRequest` is passed down this stream.
   /// The client can open a UIA prompt based on this.
   final CachedStreamController<UiaRequest> onUiaRequest =
       CachedStreamController();
 
-  final CachedStreamController<Event> onGroupCallRequest =
-      CachedStreamController();
-
+  @Deprecated('This is not in use anywhere anymore')
   final CachedStreamController<Event> onGroupMember = CachedStreamController();
 
-  final CachedStreamController<Event> onRoomState = CachedStreamController();
+  final CachedStreamController<String> onCancelSendEvent =
+      CachedStreamController();
+
+  /// When a state in a room has been updated this will return the room ID
+  /// and the state event.
+  final CachedStreamController<({String roomId, StrippedStateEvent state})>
+      onRoomState = CachedStreamController();
 
   /// How long should the app wait until it retrys the synchronisation after
   /// an error?
@@ -1376,7 +1782,8 @@ class Client extends MatrixApi {
     if (!isLogged()) {
       if (database == null) {
         throw Exception(
-            'Can not execute getEventByPushNotification() without a database');
+          'Can not execute getEventByPushNotification() without a database',
+        );
       }
       final clientInfoMap = await database.getClient(clientName);
       final token = clientInfoMap?.tryGet<String>('token');
@@ -1403,26 +1810,30 @@ class Client extends MatrixApi {
     final roomName = notification.roomName;
     final roomAlias = notification.roomAlias;
     if (roomName != null) {
-      room.setState(Event(
-        eventId: 'TEMP',
-        stateKey: '',
-        type: EventTypes.RoomName,
-        content: {'name': roomName},
-        room: room,
-        senderId: 'UNKNOWN',
-        originServerTs: DateTime.now(),
-      ));
+      room.setState(
+        Event(
+          eventId: 'TEMP',
+          stateKey: '',
+          type: EventTypes.RoomName,
+          content: {'name': roomName},
+          room: room,
+          senderId: 'UNKNOWN',
+          originServerTs: DateTime.now(),
+        ),
+      );
     }
     if (roomAlias != null) {
-      room.setState(Event(
-        eventId: 'TEMP',
-        stateKey: '',
-        type: EventTypes.RoomCanonicalAlias,
-        content: {'alias': roomAlias},
-        room: room,
-        senderId: 'UNKNOWN',
-        originServerTs: DateTime.now(),
-      ));
+      room.setState(
+        Event(
+          eventId: 'TEMP',
+          stateKey: '',
+          type: EventTypes.RoomCanonicalAlias,
+          content: {'alias': roomAlias},
+          room: room,
+          senderId: 'UNKNOWN',
+          originServerTs: DateTime.now(),
+        ),
+      );
     }
 
     // Load the event from the notification or from the database or from server:
@@ -1451,9 +1862,11 @@ class Client extends MatrixApi {
       // No access to the MatrixEvent. Search in /notifications
       final notificationsResponse = await getNotifications();
       matrixEvent ??= notificationsResponse.notifications
-          .firstWhereOrNull((notification) =>
-              notification.roomId == roomId &&
-              notification.event.eventId == eventId)
+          .firstWhereOrNull(
+            (notification) =>
+                notification.roomId == roomId &&
+                notification.event.eventId == eventId,
+          )
           ?.event;
     }
 
@@ -1505,11 +1918,11 @@ class Client extends MatrixApi {
 
     final encryption = this.encryption;
     if (event.type == EventTypes.Encrypted && encryption != null) {
-      var decrypted = await encryption.decryptRoomEvent(roomId, event);
+      var decrypted = await encryption.decryptRoomEvent(event);
       if (decrypted.messageType == MessageTypes.BadEncrypted &&
           prevBatch != null) {
         await oneShotSync();
-        decrypted = await encryption.decryptRoomEvent(roomId, event);
+        decrypted = await encryption.decryptRoomEvent(event);
       }
       event = decrypted;
     }
@@ -1517,12 +1930,11 @@ class Client extends MatrixApi {
     if (storeInDatabase) {
       await database?.transaction(() async {
         await database.storeEventUpdate(
-            EventUpdate(
-              roomID: roomId,
-              type: EventUpdateType.timeline,
-              content: event.toJson(),
-            ),
-            this);
+          roomId,
+          event,
+          EventUpdateType.timeline,
+          this,
+        );
       });
     }
 
@@ -1559,7 +1971,11 @@ class Client extends MatrixApi {
     bool waitUntilLoadCompletedLoaded = true,
 
     /// Will be called if the app performs a migration task from the [legacyDatabaseBuilder]
+    @Deprecated('Use onInitStateChanged and listen to `InitState.migration`.')
     void Function()? onMigration,
+
+    /// To track what actually happens you can set a callback here.
+    void Function(InitState)? onInitStateChanged,
   }) async {
     if ((newToken != null ||
             newUserID != null ||
@@ -1584,6 +2000,7 @@ class Client extends MatrixApi {
     String? accessToken;
     String? userID;
     try {
+      onInitStateChanged?.call(InitState.initializing);
       Logs().i('Initialize client $clientName');
       if (onLoginStateChanged.value == LoginState.loggedIn) {
         throw ClientInitPreconditionError(
@@ -1600,29 +2017,39 @@ class Client extends MatrixApi {
       }
 
       _groupCallSessionId = randomAlpha(12);
+
+      /// while I would like to move these to a onLoginStateChanged stream listener
+      /// that might be too much overhead and you don't have any use of these
+      /// when you are logged out anyway. So we just invalidate them on next login
       _serverConfigCache.invalidate();
+      _versionsCache.invalidate();
 
       final account = await this.database?.getClient(clientName);
       newRefreshToken ??= account?.tryGet<String>('refresh_token');
-      if (account != null) {
+      // can have discovery_information so make sure it also has the proper
+      // account creds
+      if (account != null &&
+          account['homeserver_url'] != null &&
+          account['user_id'] != null &&
+          account['token'] != null) {
         _id = account['client_id'];
         homeserver = Uri.parse(account['homeserver_url']);
         accessToken = this.accessToken = account['token'];
         final tokenExpiresAtMs =
             int.tryParse(account.tryGet<String>('token_expires_at') ?? '');
-        accessTokenExpiresAt = tokenExpiresAtMs == null
+        _accessTokenExpiresAt = tokenExpiresAtMs == null
             ? null
             : DateTime.fromMillisecondsSinceEpoch(tokenExpiresAtMs);
         userID = _userID = account['user_id'];
         _deviceID = account['device_id'];
         _deviceName = account['device_name'];
-        syncFilterId = account['sync_filter_id'];
-        prevBatch = account['prev_batch'];
+        _syncFilterId = account['sync_filter_id'];
+        _prevBatch = account['prev_batch'];
         olmAccount = account['olm_account'];
       }
       if (newToken != null) {
         accessToken = this.accessToken = newToken;
-        accessTokenExpiresAt = newTokenExpiresAt;
+        _accessTokenExpiresAt = newTokenExpiresAt;
         homeserver = newHomeserver;
         userID = _userID = newUserID;
         _deviceID = newDeviceID;
@@ -1630,7 +2057,7 @@ class Client extends MatrixApi {
         olmAccount = newOlmAccount;
       } else {
         accessToken = this.accessToken = newToken ?? accessToken;
-        accessTokenExpiresAt = newTokenExpiresAt ?? accessTokenExpiresAt;
+        _accessTokenExpiresAt = newTokenExpiresAt ?? accessTokenExpiresAt;
         homeserver = newHomeserver ?? homeserver;
         userID = _userID = newUserID ?? userID;
         _deviceID = newDeviceID ?? _deviceID;
@@ -1654,21 +2081,29 @@ class Client extends MatrixApi {
             encryption?.pickledOlmAccount,
           );
         }
+        onInitStateChanged?.call(InitState.finished);
         onLoginStateChanged.add(LoginState.loggedIn);
         return;
       }
 
       if (accessToken == null || homeserver == null || userID == null) {
         if (legacyDatabaseBuilder != null) {
-          await _migrateFromLegacyDatabase(onMigration: onMigration);
-          if (isLogged()) return;
+          await _migrateFromLegacyDatabase(
+            onInitStateChanged: onInitStateChanged,
+            onMigration: onMigration,
+          );
+          if (isLogged()) {
+            onInitStateChanged?.call(InitState.finished);
+            return;
+          }
         }
         // we aren't logged in
         await encryption?.dispose();
-        encryption = null;
+        _encryption = null;
         onLoginStateChanged.add(LoginState.loggedOut);
         Logs().i('User is not logged in.');
         _initLock = false;
+        onInitStateChanged?.call(InitState.finished);
         return;
       }
 
@@ -1677,12 +2112,13 @@ class Client extends MatrixApi {
         // make sure to throw an exception if libolm doesn't exist
         await olm.init();
         olm.get_library_version();
-        encryption = Encryption(client: this);
+        _encryption = Encryption(client: this);
       } catch (e) {
         Logs().e('Error initializing encryption $e');
         await encryption?.dispose();
-        encryption = null;
+        _encryption = null;
       }
+      onInitStateChanged?.call(InitState.settingUpEncryption);
       await encryption?.init(olmAccount);
 
       final database = this.database;
@@ -1724,12 +2160,17 @@ class Client extends MatrixApi {
           _accountData = data;
           _updatePushrules();
         });
+        _discoveryDataLoading = database.getWellKnown().then((data) {
+          _wellKnown = data;
+        });
         // ignore: deprecated_member_use_from_same_package
         presences.clear();
         if (waitUntilLoadCompletedLoaded) {
+          onInitStateChanged?.call(InitState.loadingData);
           await userDeviceKeysLoading;
           await roomsLoading;
           await _accountDataLoading;
+          await _discoveryDataLoading;
         }
       }
       _initLock = false;
@@ -1741,14 +2182,18 @@ class Client extends MatrixApi {
       /// Timeout of 0, so that we don't see a spinner for 30 seconds.
       firstSyncReceived = _sync(timeout: Duration.zero);
       if (waitForFirstSync) {
+        onInitStateChanged?.call(InitState.waitingForFirstSync);
         await firstSyncReceived;
       }
+      onInitStateChanged?.call(InitState.finished);
       return;
     } on ClientInitPreconditionError {
+      onInitStateChanged?.call(InitState.error);
       rethrow;
     } catch (e, s) {
       Logs().wtf('Client initialization failed', e, s);
       onLoginStateChanged.addError(e, s);
+      onInitStateChanged?.call(InitState.error);
       final clientInitException = ClientInitException(
         e,
         homeserver: homeserver,
@@ -1773,22 +2218,31 @@ class Client extends MatrixApi {
   /// Resets all settings and stops the synchronisation.
   Future<void> clear() async {
     Logs().outputEvents.clear();
+    DatabaseApi? legacyDatabase;
+    if (legacyDatabaseBuilder != null) {
+      // If there was data in the legacy db, it will never let the SDK
+      // completely log out as we migrate data from it, everytime we `init`
+      legacyDatabase = await legacyDatabaseBuilder?.call(this);
+    }
     try {
       await abortSync();
       await database?.clear();
+      await legacyDatabase?.clear();
       _backgroundSync = true;
     } catch (e, s) {
       Logs().e('Unable to clear database', e, s);
     } finally {
+      await database?.delete();
+      await legacyDatabase?.delete();
       _database = null;
     }
 
-    _id = accessToken = syncFilterId =
-        homeserver = _userID = _deviceID = _deviceName = prevBatch = null;
+    _id = accessToken = _syncFilterId =
+        homeserver = _userID = _deviceID = _deviceName = _prevBatch = null;
     _rooms = [];
     _eventsPendingDecryption.clear();
     await encryption?.dispose();
-    encryption = null;
+    _encryption = null;
     onLoginStateChanged.add(LoginState.loggedOut);
   }
 
@@ -1836,32 +2290,42 @@ class Client extends MatrixApi {
     final userID = this.userID;
     if (syncFilterId == null && userID != null) {
       final syncFilterId =
-          this.syncFilterId = await defineFilter(userID, syncFilter);
+          _syncFilterId = await defineFilter(userID, syncFilter);
       await database?.storeSyncFilterId(syncFilterId);
     }
     return;
   }
 
+  Future<void>? _handleSoftLogoutFuture;
+
   Future<void> _handleSoftLogout() async {
     final onSoftLogout = this.onSoftLogout;
-    if (onSoftLogout == null) return;
-
-    onLoginStateChanged.add(LoginState.softLoggedOut);
-    try {
-      await onSoftLogout(this);
-      onLoginStateChanged.add(LoginState.loggedIn);
-    } catch (e, s) {
-      Logs().w('Unable to refresh session after soft logout', e, s);
-      await clear();
-      rethrow;
+    if (onSoftLogout == null) {
+      await logout();
+      return;
     }
+
+    _handleSoftLogoutFuture ??= () async {
+      onLoginStateChanged.add(LoginState.softLoggedOut);
+      try {
+        await onSoftLogout(this);
+        onLoginStateChanged.add(LoginState.loggedIn);
+      } catch (e, s) {
+        Logs().w('Unable to refresh session after soft logout', e, s);
+        await logout();
+        rethrow;
+      }
+    }();
+    await _handleSoftLogoutFuture;
+    _handleSoftLogoutFuture = null;
   }
 
   /// Checks if the token expires in under [expiresIn] time and calls the
   /// given `onSoftLogout()` if so. You have to provide `onSoftLogout` in the
   /// Client constructor. Otherwise this will do nothing.
-  Future<void> ensureNotSoftLoggedOut(
-      [Duration expiresIn = const Duration(minutes: 1)]) async {
+  Future<void> ensureNotSoftLoggedOut([
+    Duration expiresIn = const Duration(minutes: 1),
+  ]) async {
     final tokenExpiresAt = accessTokenExpiresAt;
     if (onSoftLogout != null &&
         tokenExpiresAt != null &&
@@ -1882,19 +2346,22 @@ class Client extends MatrixApi {
         return;
       }
       Object? syncError;
-      await _checkSyncFilter();
 
       // The timeout we send to the server for the sync loop. It says to the
       // server that we want to receive an empty sync response after this
       // amount of time if nothing happens.
-      timeout ??= const Duration(seconds: 30);
+      if (prevBatch != null) timeout ??= const Duration(seconds: 30);
 
-      await ensureNotSoftLoggedOut(timeout * 2);
+      await ensureNotSoftLoggedOut(
+        timeout == null ? const Duration(minutes: 1) : (timeout * 2),
+      );
+
+      await _checkSyncFilter();
 
       final syncRequest = sync(
         filter: syncFilterId,
         since: prevBatch,
-        timeout: timeout.inMilliseconds,
+        timeout: timeout?.inMilliseconds,
         setPresence: syncPresence,
       ).then((v) => Future<SyncUpdate?>.value(v)).catchError((e) {
         if (e is MatrixException) {
@@ -1910,11 +2377,13 @@ class Client extends MatrixApi {
       // The timeout for the response from the server. If we do not set a sync
       // timeout (for initial sync) we give the server a longer time to
       // responde.
-      final responseTimeout = timeout == Duration.zero
-          ? const Duration(minutes: 2)
-          : timeout + const Duration(seconds: 10);
+      final responseTimeout =
+          timeout == null ? null : timeout + const Duration(seconds: 10);
 
-      final syncResp = await syncRequest.timeout(responseTimeout);
+      final syncResp = responseTimeout == null
+          ? await syncRequest
+          : await syncRequest.timeout(responseTimeout);
+
       onSyncStatus.add(SyncStatusUpdate(SyncStatus.processing));
       if (syncResp == null) throw syncError ?? 'Unknown sync error';
       if (_currentSyncId != syncRequest.hashCode) {
@@ -1943,11 +2412,12 @@ class Client extends MatrixApi {
         await _handleSync(syncResp, direction: Direction.f);
       }
       if (_disposed || _aborted) return;
-      prevBatch = syncResp.nextBatch;
+      _prevBatch = syncResp.nextBatch;
       onSyncStatus.add(SyncStatusUpdate(SyncStatus.cleaningUp));
       // ignore: unawaited_futures
       database?.deleteOldFiles(
-          DateTime.now().subtract(Duration(days: 30)).millisecondsSinceEpoch);
+        DateTime.now().subtract(Duration(days: 30)).millisecondsSinceEpoch,
+      );
       await updateUserDeviceKeys();
       if (encryptionEnabled) {
         encryption?.onSync();
@@ -1961,13 +2431,17 @@ class Client extends MatrixApi {
       _retryDelay = Future.value();
       onSyncStatus.add(SyncStatusUpdate(SyncStatus.finished));
     } on MatrixException catch (e, s) {
-      onSyncStatus.add(SyncStatusUpdate(SyncStatus.error,
-          error: SdkError(exception: e, stackTrace: s)));
+      onSyncStatus.add(
+        SyncStatusUpdate(
+          SyncStatus.error,
+          error: SdkError(exception: e, stackTrace: s),
+        ),
+      );
       if (e.error == MatrixError.M_UNKNOWN_TOKEN) {
-        final onSoftLogout = this.onSoftLogout;
-        if (e.raw.tryGet<bool>('soft_logout') == true && onSoftLogout != null) {
-          Logs().w('The user has been soft logged out! Try to login again...');
-
+        if (e.raw.tryGet<bool>('soft_logout') == true) {
+          Logs().w(
+            'The user has been soft logged out! Calling client.onSoftLogout() if present.',
+          );
           await _handleSoftLogout();
         } else {
           Logs().w('The user has been logged out!');
@@ -1976,14 +2450,24 @@ class Client extends MatrixApi {
       }
     } on SyncConnectionException catch (e, s) {
       Logs().w('Syncloop failed: Client has not connection to the server');
-      onSyncStatus.add(SyncStatusUpdate(SyncStatus.error,
-          error: SdkError(exception: e, stackTrace: s)));
+      onSyncStatus.add(
+        SyncStatusUpdate(
+          SyncStatus.error,
+          error: SdkError(exception: e, stackTrace: s),
+        ),
+      );
     } catch (e, s) {
       if (!isLogged() || _disposed || _aborted) return;
       Logs().e('Error during processing events', e, s);
-      onSyncStatus.add(SyncStatusUpdate(SyncStatus.error,
+      onSyncStatus.add(
+        SyncStatusUpdate(
+          SyncStatus.error,
           error: SdkError(
-              exception: e is Exception ? e : Exception(e), stackTrace: s)));
+            exception: e is Exception ? e : Exception(e),
+            stackTrace: s,
+          ),
+        ),
+      );
     }
   }
 
@@ -2007,13 +2491,17 @@ class Client extends MatrixApi {
       if (join != null) {
         await _handleRooms(join, direction: direction);
       }
-      final invite = sync.rooms?.invite;
-      if (invite != null) {
-        await _handleRooms(invite, direction: direction);
-      }
+      // We need to handle leave before invite. If you decline an invite and
+      // then get another invite to the same room, Synapse will include the
+      // room both in invite and leave. If you get an invite and then leave, it
+      // will only be included in leave.
       final leave = sync.rooms?.leave;
       if (leave != null) {
         await _handleRooms(leave, direction: direction);
+      }
+      final invite = sync.rooms?.invite;
+      if (invite != null) {
+        await _handleRooms(invite, direction: direction);
       }
     }
     for (final newPresence in sync.presence ?? <Presence>[]) {
@@ -2025,12 +2513,13 @@ class Client extends MatrixApi {
       onPresenceChanged.add(cachedPresence);
       await database?.storePresence(newPresence.senderId, cachedPresence);
     }
-    for (final newAccountData in sync.accountData ?? []) {
+    for (final newAccountData in sync.accountData ?? <BasicEvent>[]) {
       await database?.storeAccountData(
         newAccountData.type,
-        jsonEncode(newAccountData.content),
+        newAccountData.content,
       );
       accountData[newAccountData.type] = newAccountData;
+      // ignore: deprecated_member_use_from_same_package
       onAccountData.add(newAccountData);
 
       if (newAccountData.type == EventTypes.PushRules) {
@@ -2044,7 +2533,9 @@ class Client extends MatrixApi {
     }
     if (encryptionEnabled) {
       encryption?.handleDeviceOneTimeKeysCount(
-          sync.deviceOneTimeKeysCount, sync.deviceUnusedFallbackKeyTypes);
+        sync.deviceOneTimeKeysCount,
+        sync.deviceUnusedFallbackKeyTypes,
+      );
     }
     _sortRooms();
     onSync.add(sync);
@@ -2069,6 +2560,7 @@ class Client extends MatrixApi {
 
   Future<void> _handleToDeviceEvents(List<BasicEventWithSender> events) async {
     final Map<String, List<String>> roomsWithNewKeyToSessionId = {};
+    final List<ToDeviceEvent> callToDeviceEvents = [];
     for (final event in events) {
       var toDeviceEvent = ToDeviceEvent.fromJson(event.toJson());
       Logs().v('Got to_device event of type ${toDeviceEvent.type}');
@@ -2089,7 +2581,14 @@ class Client extends MatrixApi {
         }
         await encryption?.handleToDeviceEvent(toDeviceEvent);
       }
+      if (toDeviceEvent.type.startsWith(CallConstants.callEventsRegxp)) {
+        callToDeviceEvents.add(toDeviceEvent);
+      }
       onToDeviceEvent.add(toDeviceEvent);
+    }
+
+    if (callToDeviceEvents.isNotEmpty) {
+      onCallEvents.add(callToDeviceEvents);
     }
 
     // emit updates for all events in the queue
@@ -2099,39 +2598,52 @@ class Client extends MatrixApi {
 
       final room = getRoomById(roomId);
       if (room != null) {
-        final List<BasicEvent> events = [];
+        final events = <Event>[];
         for (final event in _eventsPendingDecryption) {
-          if (event.event.roomID != roomId) continue;
+          if (event.event.room.id != roomId) continue;
           if (!sessionIds.contains(
-              event.event.content['content']?['session_id'])) continue;
+            event.event.content.tryGet<String>('session_id'),
+          )) {
+            continue;
+          }
 
-          final decryptedEvent = await event.event.decrypt(room);
-          if (decryptedEvent.content.tryGet<String>('type') !=
-              EventTypes.Encrypted) {
-            events.add(BasicEvent.fromJson(decryptedEvent.content));
+          final decryptedEvent =
+              await encryption!.decryptRoomEvent(event.event);
+          if (decryptedEvent.type != EventTypes.Encrypted) {
+            events.add(decryptedEvent);
           }
         }
 
         await _handleRoomEvents(
-            room, events, EventUpdateType.decryptedTimelineQueue);
+          room,
+          events,
+          EventUpdateType.decryptedTimelineQueue,
+        );
 
-        _eventsPendingDecryption.removeWhere((e) => events.any(
+        _eventsPendingDecryption.removeWhere(
+          (e) => events.any(
             (decryptedEvent) =>
                 decryptedEvent.content['event_id'] ==
-                e.event.content['event_id']));
+                e.event.content['event_id'],
+          ),
+        );
       }
     }
     _eventsPendingDecryption.removeWhere((e) => e.timedOut);
   }
 
-  Future<void> _handleRooms(Map<String, SyncRoomUpdate> rooms,
-      {Direction? direction}) async {
+  Future<void> _handleRooms(
+    Map<String, SyncRoomUpdate> rooms, {
+    Direction? direction,
+  }) async {
     var handledRooms = 0;
     for (final entry in rooms.entries) {
-      onSyncStatus.add(SyncStatusUpdate(
-        SyncStatus.processing,
-        progress: ++handledRooms / rooms.length,
-      ));
+      onSyncStatus.add(
+        SyncStatusUpdate(
+          SyncStatus.processing,
+          progress: ++handledRooms / rooms.length,
+        ),
+      );
       final id = entry.key;
       final syncRoomUpdate = entry.value;
 
@@ -2153,8 +2665,27 @@ class Client extends MatrixApi {
       if (syncRoomUpdate is JoinedRoomUpdate) {
         final state = syncRoomUpdate.state;
 
+        // If we are receiving states when fetching history we need to check if
+        // we are not overwriting a newer state.
+        if (direction == Direction.b) {
+          await room.postLoad();
+          state?.removeWhere((state) {
+            final existingState =
+                room.getState(state.type, state.stateKey ?? '');
+            if (existingState == null) return false;
+            if (existingState is User) {
+              return existingState.originServerTs
+                      ?.isAfter(state.originServerTs) ??
+                  true;
+            }
+            if (existingState is MatrixEvent) {
+              return existingState.originServerTs.isAfter(state.originServerTs);
+            }
+            return true;
+          });
+        }
+
         if (state != null && state.isNotEmpty) {
-          // TODO: This method seems to be comperatively slow for some updates
           await _handleRoomEvents(
             room,
             state,
@@ -2178,30 +2709,37 @@ class Client extends MatrixApi {
 
         final accountData = syncRoomUpdate.accountData;
         if (accountData != null && accountData.isNotEmpty) {
-          await _handleRoomEvents(
-            room,
-            accountData,
-            EventUpdateType.accountData,
-          );
+          for (final event in accountData) {
+            await database?.storeRoomAccountData(room.id, event);
+            room.roomAccountData[event.type] = event;
+          }
         }
       }
 
       if (syncRoomUpdate is LeftRoomUpdate) {
         final timelineEvents = syncRoomUpdate.timeline?.events;
         if (timelineEvents != null && timelineEvents.isNotEmpty) {
-          await _handleRoomEvents(room, timelineEvents, timelineUpdateType,
-              store: false);
+          await _handleRoomEvents(
+            room,
+            timelineEvents,
+            timelineUpdateType,
+            store: false,
+          );
         }
         final accountData = syncRoomUpdate.accountData;
         if (accountData != null && accountData.isNotEmpty) {
-          await _handleRoomEvents(
-              room, accountData, EventUpdateType.accountData,
-              store: false);
+          for (final event in accountData) {
+            room.roomAccountData[event.type] = event;
+          }
         }
         final state = syncRoomUpdate.state;
         if (state != null && state.isNotEmpty) {
-          await _handleRoomEvents(room, state, EventUpdateType.state,
-              store: false);
+          await _handleRoomEvents(
+            room,
+            state,
+            EventUpdateType.state,
+            store: false,
+          );
         }
       }
 
@@ -2215,11 +2753,11 @@ class Client extends MatrixApi {
     }
   }
 
-  Future<void> _handleEphemerals(Room room, List<BasicRoomEvent> events) async {
+  Future<void> _handleEphemerals(Room room, List<BasicEvent> events) async {
     final List<ReceiptEventContent> receipts = [];
 
     for (final event in events) {
-      await _handleRoomEvents(room, [event], EventUpdateType.ephemeral);
+      room.setEphemeral(event);
 
       // Receipt events are deltas between two states. We will create a
       // fake room account data event for this and store the difference
@@ -2236,16 +2774,12 @@ class Client extends MatrixApi {
         await receiptStateContent.update(e, room);
       }
 
-      await _handleRoomEvents(
-          room,
-          [
-            BasicRoomEvent(
-              type: LatestReceiptState.eventType,
-              roomId: room.id,
-              content: receiptStateContent.toJson(),
-            )
-          ],
-          EventUpdateType.accountData);
+      final event = BasicEvent(
+        type: LatestReceiptState.eventType,
+        content: receiptStateContent.toJson(),
+      );
+      await database?.storeRoomAccountData(room.id, event);
+      room.roomAccountData[event.type] = event;
     }
   }
 
@@ -2253,13 +2787,16 @@ class Client extends MatrixApi {
   final List<_EventPendingDecryption> _eventsPendingDecryption = [];
 
   Future<void> _handleRoomEvents(
-      Room room, List<BasicEvent> events, EventUpdateType type,
-      {bool store = true}) async {
+    Room room,
+    List<StrippedStateEvent> events,
+    EventUpdateType type, {
+    bool store = true,
+  }) async {
     // Calling events can be omitted if they are outdated from the same sync. So
     // we collect them first before we handle them.
-    final callEvents = <Event>{};
+    final callEvents = <Event>[];
 
-    for (final event in events) {
+    for (var event in events) {
       // The client must ignore any new m.room.encryption event to prevent
       // man-in-the-middle attacks!
       if ((event.type == EventTypes.Encryption &&
@@ -2272,19 +2809,34 @@ class Client extends MatrixApi {
         continue;
       }
 
-      var update =
-          EventUpdate(roomID: room.id, type: type, content: event.toJson());
-      if (event.type == EventTypes.Encrypted && encryptionEnabled) {
-        update = await update.decrypt(room);
+      if (event is MatrixEvent &&
+          event.type == EventTypes.Encrypted &&
+          encryptionEnabled) {
+        event = await encryption!.decryptRoomEvent(
+          Event.fromMatrixEvent(event, room),
+          updateType: type,
+        );
 
-        // if the event failed to decrypt, add it to the queue
-        if (update.content.tryGet<String>('type') == EventTypes.Encrypted) {
-          _eventsPendingDecryption.add(_EventPendingDecryption(EventUpdate(
-              roomID: update.roomID,
-              type: EventUpdateType.decryptedTimelineQueue,
-              content: update.content)));
+        if (event.type == EventTypes.Encrypted) {
+          // if the event failed to decrypt, add it to the queue
+          _eventsPendingDecryption.add(
+            _EventPendingDecryption(Event.fromMatrixEvent(event, room)),
+          );
         }
       }
+
+      // Any kind of member change? We should invalidate the profile then:
+      if (event.type == EventTypes.RoomMember) {
+        final userId = event.stateKey;
+        if (userId != null) {
+          // We do not re-request the profile here as this would lead to
+          // an unknown amount of network requests as we never know how many
+          // member change events can come down in a single sync update.
+          await database?.markUserProfileAsOutdated(userId);
+          onUserProfileUpdate.add(userId);
+        }
+      }
+
       if (event.type == EventTypes.Message &&
           !room.isDirectChat &&
           database != null &&
@@ -2296,105 +2848,76 @@ class Client extends MatrixApi {
           room.setState(user);
         }
       }
-      _updateRoomsByEventUpdate(room, update);
-      if (type != EventUpdateType.ephemeral && store) {
-        await database?.storeEventUpdate(update, this);
+      _updateRoomsByEventUpdate(room, event, type);
+      if (store) {
+        await database?.storeEventUpdate(room.id, event, type, this);
       }
-      if (encryptionEnabled) {
-        await encryption?.handleEventUpdate(update);
+      if (event is MatrixEvent && encryptionEnabled) {
+        await encryption?.handleEventUpdate(
+          Event.fromMatrixEvent(event, room),
+          type,
+        );
       }
-      onEvent.add(update);
+
+      // ignore: deprecated_member_use_from_same_package
+      onEvent.add(
+        // ignore: deprecated_member_use_from_same_package
+        EventUpdate(
+          roomID: room.id,
+          type: type,
+          content: event.toJson(),
+        ),
+      );
+      if (event is MatrixEvent) {
+        final timelineEvent = Event.fromMatrixEvent(event, room);
+        switch (type) {
+          case EventUpdateType.timeline:
+            onTimelineEvent.add(timelineEvent);
+            if (prevBatch != null &&
+                timelineEvent.senderId != userID &&
+                room.notificationCount > 0 &&
+                pushruleEvaluator.match(timelineEvent).notify) {
+              onNotification.add(timelineEvent);
+            }
+            break;
+          case EventUpdateType.history:
+            onHistoryEvent.add(timelineEvent);
+            break;
+          default:
+            break;
+        }
+      }
+
+      // Trigger local notification for a new invite:
+      if (prevBatch != null &&
+          type == EventUpdateType.inviteState &&
+          event.type == EventTypes.RoomMember &&
+          event.stateKey == userID) {
+        onNotification.add(
+          Event(
+            type: event.type,
+            eventId: 'invite_for_${room.id}',
+            senderId: event.senderId,
+            originServerTs: DateTime.now(),
+            stateKey: event.stateKey,
+            content: event.content,
+            room: room,
+          ),
+        );
+      }
 
       if (prevBatch != null &&
           (type == EventUpdateType.timeline ||
               type == EventUpdateType.decryptedTimelineQueue)) {
-        if ((update.content.tryGet<String>('type')?.startsWith('m.call.') ??
-                false) ||
-            (update.content
-                    .tryGet<String>('type')
-                    ?.startsWith('org.matrix.call.') ??
-                false)) {
-          final callEvent = Event.fromJson(update.content, room);
-          final callId = callEvent.content.tryGet<String>('call_id');
+        if (event is MatrixEvent &&
+            (event.type.startsWith(CallConstants.callEventsRegxp))) {
+          final callEvent = Event.fromMatrixEvent(event, room);
           callEvents.add(callEvent);
-
-          // Call Invites should be omitted for a call that is already answered,
-          // has ended, is rejectd or replaced.
-          const callEndedEventTypes = {
-            EventTypes.CallAnswer,
-            EventTypes.CallHangup,
-            EventTypes.CallReject,
-            EventTypes.CallReplaces,
-          };
-          const ommitWhenCallEndedTypes = {
-            EventTypes.CallInvite,
-            EventTypes.CallCandidates,
-            EventTypes.CallNegotiate,
-            EventTypes.CallSDPStreamMetadataChanged,
-            EventTypes.CallSDPStreamMetadataChangedPrefix,
-          };
-
-          if (callEndedEventTypes.contains(callEvent.type)) {
-            callEvents.removeWhere((event) {
-              if (ommitWhenCallEndedTypes.contains(event.type) &&
-                  event.content.tryGet<String>('call_id') == callId) {
-                Logs().v(
-                    'Ommit "${event.type}" event for an already terminated call');
-                return true;
-              }
-              return false;
-            });
-          }
-
-          final age = callEvent.unsigned?.tryGet<int>('age') ??
-              (DateTime.now().millisecondsSinceEpoch -
-                  callEvent.originServerTs.millisecondsSinceEpoch);
-
-          callEvents.removeWhere((element) {
-            if (callEvent.type == EventTypes.CallInvite &&
-                age >
-                    (callEvent.content.tryGet<int>('lifetime') ??
-                        CallTimeouts.callInviteLifetime.inMilliseconds)) {
-              Logs().v(
-                  'Ommiting invite event ${callEvent.eventId} as age was older than lifetime');
-              return true;
-            }
-            return false;
-          });
         }
       }
     }
-
-    callEvents.forEach(_callStreamByCallEvent);
-  }
-
-  void _callStreamByCallEvent(Event event) {
-    if (event.type == EventTypes.CallInvite) {
-      onCallInvite.add(event);
-    } else if (event.type == EventTypes.CallHangup) {
-      onCallHangup.add(event);
-    } else if (event.type == EventTypes.CallAnswer) {
-      onCallAnswer.add(event);
-    } else if (event.type == EventTypes.CallCandidates) {
-      onCallCandidates.add(event);
-    } else if (event.type == EventTypes.CallSelectAnswer) {
-      onCallSelectAnswer.add(event);
-    } else if (event.type == EventTypes.CallReject) {
-      onCallReject.add(event);
-    } else if (event.type == EventTypes.CallNegotiate) {
-      onCallNegotiate.add(event);
-    } else if (event.type == EventTypes.CallReplaces) {
-      onCallReplaces.add(event);
-    } else if (event.type == EventTypes.CallAssertedIdentity ||
-        event.type == EventTypes.CallAssertedIdentityPrefix) {
-      onAssertedIdentityReceived.add(event);
-    } else if (event.type == EventTypes.CallSDPStreamMetadataChanged ||
-        event.type == EventTypes.CallSDPStreamMetadataChangedPrefix) {
-      onSDPStreamMetadataChangedReceived.add(event);
-      // TODO(duan): Only used (org.matrix.msc3401.call) during the current test,
-      // need to add GroupCallPrefix in matrix_api_lite
-    } else if (event.type == EventTypes.GroupCallPrefix) {
-      onGroupCallRequest.add(event);
+    if (callEvents.isNotEmpty) {
+      onCallEvents.add(callEvents);
     }
   }
 
@@ -2402,7 +2925,9 @@ class Client extends MatrixApi {
   DateTime lastStaleCallRun = DateTime(0);
 
   Future<Room> _updateRoomsByRoomUpdate(
-      String roomId, SyncRoomUpdate chatUpdate) async {
+    String roomId,
+    SyncRoomUpdate chatUpdate,
+  ) async {
     // Update the chat list item.
     // Search the room in the rooms
     final roomIndex = rooms.indexWhere((r) => r.id == roomId);
@@ -2463,9 +2988,6 @@ class Client extends MatrixApi {
           chatUpdate.unreadNotifications?.notificationCount ?? 0;
       rooms[roomIndex].highlightCount =
           chatUpdate.unreadNotifications?.highlightCount ?? 0;
-      if (chatUpdate.timeline?.prevBatch != null) {
-        rooms[roomIndex].prev_batch = chatUpdate.timeline?.prevBatch;
-      }
 
       final summary = chatUpdate.summary;
       if (summary != null) {
@@ -2473,50 +2995,63 @@ class Client extends MatrixApi {
           ..addAll(summary.toJson());
         rooms[roomIndex].summary = RoomSummary.fromJson(roomSummaryJson);
       }
+      // ignore: deprecated_member_use_from_same_package
       rooms[roomIndex].onUpdate.add(rooms[roomIndex].id);
       if ((chatUpdate.timeline?.limited ?? false) &&
           requestHistoryOnLimitedTimeline) {
         Logs().v(
-            'Limited timeline for ${rooms[roomIndex].id} request history now');
+          'Limited timeline for ${rooms[roomIndex].id} request history now',
+        );
         runInRoot(rooms[roomIndex].requestHistory);
       }
     }
     return room;
   }
 
-  void _updateRoomsByEventUpdate(Room room, EventUpdate eventUpdate) {
-    if (eventUpdate.type == EventUpdateType.history) return;
+  void _updateRoomsByEventUpdate(
+    Room room,
+    StrippedStateEvent eventUpdate,
+    EventUpdateType type,
+  ) {
+    if (type == EventUpdateType.history) return;
 
-    switch (eventUpdate.type) {
+    switch (type) {
       case EventUpdateType.inviteState:
-        room.setState(Event.fromJson(eventUpdate.content, room));
+        room.setState(eventUpdate);
         break;
       case EventUpdateType.state:
       case EventUpdateType.timeline:
-        final event = Event.fromJson(eventUpdate.content, room);
+        if (eventUpdate is! MatrixEvent) {
+          Logs().wtf(
+            'Passed in a ${eventUpdate.runtimeType} with $type to _updateRoomsByEventUpdate(). This should never happen!',
+          );
+          assert(eventUpdate is! MatrixEvent);
+          return;
+        }
+        final event = Event.fromMatrixEvent(eventUpdate, room);
 
         // Update the room state:
-        if (!room.partial ||
-            // make sure we do overwrite events we have already loaded.
-            room.states[event.type]?.containsKey(event.stateKey ?? '') ==
-                true ||
-            importantStateEvents.contains(event.type)) {
+        if (event.stateKey != null &&
+            (!room.partial || importantStateEvents.contains(event.type))) {
           room.setState(event);
         }
-        if (eventUpdate.type != EventUpdateType.timeline) break;
+        if (type != EventUpdateType.timeline) break;
 
         // If last event is null or not a valid room preview event anyway,
         // just use this:
-        if (room.lastEvent == null ||
-            !roomPreviewLastEvents.contains(room.lastEvent?.type)) {
+        if (room.lastEvent == null) {
           room.lastEvent = event;
           break;
         }
 
         // Is this event redacting the last event?
         if (event.type == EventTypes.Redaction &&
-            (event.content.tryGet<String>('redacts') ?? event.redacts) ==
-                room.lastEvent?.eventId) {
+            ({
+              room.lastEvent?.eventId,
+              room.lastEvent?.relationshipEventId,
+            }.contains(
+              event.redacts ?? event.content.tryGet<String>('redacts'),
+            ))) {
           room.lastEvent?.setRedactionEvent(event);
           break;
         }
@@ -2539,18 +3074,11 @@ class Client extends MatrixApi {
         room.lastEvent = event;
 
         break;
-      case EventUpdateType.accountData:
-        room.roomAccountData[eventUpdate.content['type']] =
-            BasicRoomEvent.fromJson(eventUpdate.content);
-        break;
-      case EventUpdateType.ephemeral:
-        room.ephemerals[eventUpdate.content['type']] =
-            BasicRoomEvent.fromJson(eventUpdate.content);
-        break;
       case EventUpdateType.history:
       case EventUpdateType.decryptedTimelineQueue:
         break;
     }
+    // ignore: deprecated_member_use_from_same_package
     room.onUpdate.add(room.id);
   }
 
@@ -2576,8 +3104,8 @@ class Client extends MatrixApi {
             a.notificationCount != b.notificationCount) {
           return b.notificationCount.compareTo(a.notificationCount);
         } else {
-          return b.timeCreated.millisecondsSinceEpoch
-              .compareTo(a.timeCreated.millisecondsSinceEpoch);
+          return b.latestEventReceivedTime.millisecondsSinceEpoch
+              .compareTo(a.latestEventReceivedTime.millisecondsSinceEpoch);
         }
       };
 
@@ -2591,9 +3119,12 @@ class Client extends MatrixApi {
   Future? userDeviceKeysLoading;
   Future? roomsLoading;
   Future? _accountDataLoading;
+  Future? _discoveryDataLoading;
   Future? firstSyncReceived;
 
   Future? get accountDataLoading => _accountDataLoading;
+
+  Future? get wellKnownLoading => _discoveryDataLoading;
 
   /// A map of known device keys per user.
   Map<String, DeviceKeysList> get userDeviceKeys => _userDeviceKeys;
@@ -2704,7 +3235,10 @@ class Client extends MatrixApi {
 
               // Set the new device key for this device
               final entry = DeviceKeys.fromMatrixDeviceKeys(
-                  rawDeviceKeyEntry.value, this, oldKeys[deviceId]?.lastActive);
+                rawDeviceKeyEntry.value,
+                this,
+                oldKeys[deviceId]?.lastActive,
+              );
               final ed25519Key = entry.ed25519Key;
               final curve25519Key = entry.curve25519Key;
               if (entry.isValid &&
@@ -2718,24 +3252,30 @@ class Client extends MatrixApi {
                   if (oldPublicKeys != null &&
                       oldPublicKeys != curve25519Key + ed25519Key) {
                     Logs().w(
-                        'Already seen Device ID has been added again. This might be an attack!');
+                      'Already seen Device ID has been added again. This might be an attack!',
+                    );
                     continue;
                   }
                   final oldDeviceId = await database.publicKeySeen(ed25519Key);
                   if (oldDeviceId != null && oldDeviceId != deviceId) {
                     Logs().w(
-                        'Already seen ED25519 has been added again. This might be an attack!');
+                      'Already seen ED25519 has been added again. This might be an attack!',
+                    );
                     continue;
                   }
                   final oldDeviceId2 =
                       await database.publicKeySeen(curve25519Key);
                   if (oldDeviceId2 != null && oldDeviceId2 != deviceId) {
                     Logs().w(
-                        'Already seen Curve25519 has been added again. This might be an attack!');
+                      'Already seen Curve25519 has been added again. This might be an attack!',
+                    );
                     continue;
                   }
                   await database.addSeenDeviceId(
-                      userId, deviceId, curve25519Key + ed25519Key);
+                    userId,
+                    deviceId,
+                    curve25519Key + ed25519Key,
+                  );
                   await database.addSeenPublicKey(ed25519Key, deviceId);
                   await database.addSeenPublicKey(curve25519Key, deviceId);
                 }
@@ -2758,14 +3298,16 @@ class Client extends MatrixApi {
                     // Always trust the own device
                     entry.setDirectVerified(true);
                   }
-                  dbActions.add(() => database.storeUserDeviceKey(
-                        userId,
-                        deviceId,
-                        json.encode(entry.toJson()),
-                        entry.directVerified,
-                        entry.blocked,
-                        entry.lastActive.millisecondsSinceEpoch,
-                      ));
+                  dbActions.add(
+                    () => database.storeUserDeviceKey(
+                      userId,
+                      deviceId,
+                      json.encode(entry.toJson()),
+                      entry.directVerified,
+                      entry.blocked,
+                      entry.lastActive.millisecondsSinceEpoch,
+                    ),
+                  );
                 } else if (oldKeys.containsKey(deviceId)) {
                   // This shouldn't ever happen. The same device ID has gotten
                   // a new public key. So we ignore the update. TODO: ask krille
@@ -2816,12 +3358,16 @@ class Client extends MatrixApi {
               } else {
                 // There is a previous cross-signing key with  this usage, that we no
                 // longer need/use. Clear it from the database.
-                dbActions.add(() =>
-                    database.removeUserCrossSigningKey(userId, oldEntry.key));
+                dbActions.add(
+                  () =>
+                      database.removeUserCrossSigningKey(userId, oldEntry.key),
+                );
               }
             }
             final entry = CrossSigningKey.fromMatrixCrossSigningKey(
-                crossSigningKeyListEntry.value, this);
+              crossSigningKeyListEntry.value,
+              this,
+            );
             final publicKey = entry.publicKey;
             if (entry.isValid && publicKey != null) {
               final oldKey = oldKeys[publicKey];
@@ -2839,13 +3385,15 @@ class Client extends MatrixApi {
                 // if we should instead use the new key with unknown verified / blocked status
                 userKeys.crossSigningKeys[publicKey] = oldKey;
               }
-              dbActions.add(() => database.storeUserCrossSigningKey(
-                    userId,
-                    publicKey,
-                    json.encode(entry.toJson()),
-                    entry.directVerified,
-                    entry.blocked,
-                  ));
+              dbActions.add(
+                () => database.storeUserCrossSigningKey(
+                  userId,
+                  publicKey,
+                  json.encode(entry.toJson()),
+                  entry.directVerified,
+                  entry.blocked,
+                ),
+              );
             }
             _userDeviceKeys[userId]?.outdated = false;
             dbActions
@@ -2892,17 +3440,24 @@ class Client extends MatrixApi {
     for (final entry in entries) {
       // Convert the Json Map to the correct format regarding
       // https: //matrix.org/docs/spec/client_server/r0.6.1#put-matrix-client-r0-sendtodevice-eventtype-txnid
-      final data = entry.content.map((k, v) =>
-          MapEntry<String, Map<String, Map<String, dynamic>>>(
+      final data = entry.content.map(
+        (k, v) => MapEntry<String, Map<String, Map<String, dynamic>>>(
+          k,
+          (v as Map).map(
+            (k, v) => MapEntry<String, Map<String, dynamic>>(
               k,
-              (v as Map).map((k, v) => MapEntry<String, Map<String, dynamic>>(
-                  k, Map<String, dynamic>.from(v)))));
+              Map<String, dynamic>.from(v),
+            ),
+          ),
+        ),
+      );
 
       try {
         await super.sendToDevice(entry.type, entry.txnId, data);
       } on MatrixException catch (e) {
         Logs().w(
-            '[To-Device] failed to to_device message from the queue to the server. Ignoring error: $e');
+          '[To-Device] failed to to_device message from the queue to the server. Ignoring error: $e',
+        );
         Logs().w('Payload: $data');
       }
       await database.deleteFromToDeviceQueue(entry.id);
@@ -2923,14 +3478,18 @@ class Client extends MatrixApi {
       await super.sendToDevice(eventType, txnId, messages);
     } catch (e, s) {
       Logs().w(
-          '[Client] Problem while sending to_device event, retrying later...',
-          e,
-          s);
+        '[Client] Problem while sending to_device event, retrying later...',
+        e,
+        s,
+      );
       final database = this.database;
       if (database != null) {
         _toDeviceQueueNeedsProcessing = true;
         await database.insertIntoToDeviceQueue(
-            eventType, txnId, json.encode(messages));
+          eventType,
+          txnId,
+          json.encode(messages),
+        );
       }
       rethrow;
     }
@@ -2950,7 +3509,10 @@ class Client extends MatrixApi {
       data[user] = {'*': message};
     }
     await sendToDevice(
-        eventType, messageId ?? generateUniqueTransactionId(), data);
+      eventType,
+      messageId ?? generateUniqueTransactionId(),
+      data,
+    );
     return;
   }
 
@@ -2969,10 +3531,12 @@ class Client extends MatrixApi {
     // Don't send this message to blocked devices, and if specified onlyVerified
     // then only send it to verified devices
     if (deviceKeys.isNotEmpty) {
-      deviceKeys.removeWhere((DeviceKeys deviceKeys) =>
-          deviceKeys.blocked ||
-          (deviceKeys.userId == userID && deviceKeys.deviceId == deviceID) ||
-          (onlyVerified && !deviceKeys.verified));
+      deviceKeys.removeWhere(
+        (DeviceKeys deviceKeys) =>
+            deviceKeys.blocked ||
+            (deviceKeys.userId == userID && deviceKeys.deviceId == deviceID) ||
+            (onlyVerified && !deviceKeys.verified),
+      );
       if (deviceKeys.isEmpty) return;
     }
 
@@ -2995,7 +3559,10 @@ class Client extends MatrixApi {
       );
       eventType = EventTypes.Encrypted;
       await sendToDevice(
-          eventType, messageId ?? generateUniqueTransactionId(), data);
+        eventType,
+        messageId ?? generateUniqueTransactionId(),
+        data,
+      );
     } finally {
       _sendToDeviceEncryptedLock.unlock(deviceKeys);
     }
@@ -3013,8 +3580,10 @@ class Client extends MatrixApi {
     if (!encryptionEnabled) return;
     // be sure to copy our device keys list
     deviceKeys = List<DeviceKeys>.from(deviceKeys);
-    deviceKeys.removeWhere((DeviceKeys k) =>
-        k.blocked || (k.userId == userID && k.deviceId == deviceID));
+    deviceKeys.removeWhere(
+      (DeviceKeys k) =>
+          k.blocked || (k.userId == userID && k.deviceId == deviceID),
+    );
     if (deviceKeys.isEmpty) return;
     message = message.copy(); // make sure we deep-copy the message
     // make sure all the olm sessions are loaded from database
@@ -3031,10 +3600,9 @@ class Client extends MatrixApi {
     for (; i < deviceKeys.length && i <= 0; i += chunkSize) {
       Logs().v('Sending chunk $i...');
       final chunk = deviceKeys.sublist(
-          i,
-          i + chunkSize > deviceKeys.length
-              ? deviceKeys.length
-              : i + chunkSize);
+        i,
+        i + chunkSize > deviceKeys.length ? deviceKeys.length : i + chunkSize,
+      );
       // and send
       await sendToDeviceEncrypted(chunk, eventType, message);
     }
@@ -3047,10 +3615,11 @@ class Client extends MatrixApi {
           await Future.delayed(Duration(milliseconds: 50));
           Logs().v('Sending chunk $i...');
           final chunk = deviceKeys.sublist(
-              i,
-              i + chunkSize > deviceKeys.length
-                  ? deviceKeys.length
-                  : i + chunkSize);
+            i,
+            i + chunkSize > deviceKeys.length
+                ? deviceKeys.length
+                : i + chunkSize,
+          );
           // and send
           await sendToDeviceEncrypted(chunk, eventType, message);
         }
@@ -3080,7 +3649,6 @@ class Client extends MatrixApi {
 
   Future<void> setMuteAllPushNotifications(bool muted) async {
     await setPushRuleEnabled(
-      'global',
       PushRuleKind.override,
       '.m.rule.master',
       muted,
@@ -3088,12 +3656,32 @@ class Client extends MatrixApi {
     return;
   }
 
+  /// preference is always given to via over serverName, irrespective of what field
+  /// you are trying to use
+  @override
+  Future<String> joinRoom(
+    String roomIdOrAlias, {
+    List<String>? serverName,
+    List<String>? via,
+    String? reason,
+    ThirdPartySigned? thirdPartySigned,
+  }) =>
+      super.joinRoom(
+        roomIdOrAlias,
+        serverName: via ?? serverName,
+        via: via ?? serverName,
+        reason: reason,
+        thirdPartySigned: thirdPartySigned,
+      );
+
   /// Changes the password. You should either set oldPasswort or another authentication flow.
   @override
-  Future<void> changePassword(String newPassword,
-      {String? oldPassword,
-      AuthenticationData? auth,
-      bool? logoutDevices}) async {
+  Future<void> changePassword(
+    String newPassword, {
+    String? oldPassword,
+    AuthenticationData? auth,
+    bool? logoutDevices,
+  }) async {
     final userID = this.userID;
     try {
       if (oldPassword != null && userID != null) {
@@ -3102,8 +3690,11 @@ class Client extends MatrixApi {
           password: oldPassword,
         );
       }
-      await super.changePassword(newPassword,
-          auth: auth, logoutDevices: logoutDevices);
+      await super.changePassword(
+        newPassword,
+        auth: auth,
+        logoutDevices: logoutDevices,
+      );
     } on MatrixException catch (matrixException) {
       if (!matrixException.requireAdditionalAuthentication) {
         rethrow;
@@ -3135,7 +3726,7 @@ class Client extends MatrixApi {
   /// sessions and perform a new clean sync.
   Future<void> clearCache() async {
     await abortSync();
-    prevBatch = null;
+    _prevBatch = null;
     rooms.clear();
     await database?.clearCache();
     encryption?.keyManager.clearOutboundGroupSessions();
@@ -3146,12 +3737,13 @@ class Client extends MatrixApi {
   }
 
   /// A list of mxids of users who are ignored.
-  List<String> get ignoredUsers =>
-      List<String>.from(_accountData['m.ignored_user_list']
-              ?.content
-              .tryGetMap<String, Object?>('ignored_users')
-              ?.keys ??
-          <String>[]);
+  List<String> get ignoredUsers => List<String>.from(
+        _accountData['m.ignored_user_list']
+                ?.content
+                .tryGetMap<String, Object?>('ignored_users')
+                ?.keys ??
+            <String>[],
+      );
 
   /// Ignore another user. This will clear the local cached messages to
   /// hide all previous messages from this user.
@@ -3161,7 +3753,8 @@ class Client extends MatrixApi {
     }
     await setAccountData(userID!, 'm.ignored_user_list', {
       'ignored_users': Map.fromEntries(
-          (ignoredUsers..add(userId)).map((key) => MapEntry(key, {}))),
+        (ignoredUsers..add(userId)).map((key) => MapEntry(key, {})),
+      ),
     });
     await clearCache();
     return;
@@ -3178,7 +3771,8 @@ class Client extends MatrixApi {
     }
     await setAccountData(userID!, 'm.ignored_user_list', {
       'ignored_users': Map.fromEntries(
-          (ignoredUsers..remove(userId)).map((key) => MapEntry(key, {}))),
+        (ignoredUsers..remove(userId)).map((key) => MapEntry(key, {})),
+      ),
     });
     await clearCache();
     return;
@@ -3242,7 +3836,7 @@ class Client extends MatrixApi {
     _disposed = true;
     await abortSync();
     await encryption?.dispose();
-    encryption = null;
+    _encryption = null;
     try {
       if (closeDatabase) {
         final database = _database;
@@ -3258,6 +3852,7 @@ class Client extends MatrixApi {
   }
 
   Future<void> _migrateFromLegacyDatabase({
+    void Function(InitState)? onInitStateChanged,
     void Function()? onMigration,
   }) async {
     Logs().i('Check legacy database for migration data...');
@@ -3271,6 +3866,7 @@ class Client extends MatrixApi {
       return;
     }
     Logs().i('Found data in the legacy database!');
+    onInitStateChanged?.call(InitState.migratingDatabase);
     onMigration?.call();
     _id = migrateClient['client_id'];
     final tokenExpiresAtMs =
@@ -3330,7 +3926,8 @@ class Client extends MatrixApi {
         final pubKey = crossSigningKey.publicKey;
         if (pubKey != null) {
           Logs().d(
-              'Migrate cross signing key with usage ${crossSigningKey.usage} and verified ${crossSigningKey.directVerified}...');
+            'Migrate cross signing key with usage ${crossSigningKey.usage} and verified ${crossSigningKey.directVerified}...',
+          );
           await database.storeUserCrossSigningKey(
             userId,
             pubKey,
@@ -3381,12 +3978,14 @@ class Client extends MatrixApi {
       Logs().e('Unable to migrate inbound group sessions!', e, s);
     }
 
+    await legacyDatabase.clear();
     await legacyDatabase.delete();
 
     _initLock = false;
     return init(
       waitForFirstSync: false,
       waitUntilLoadCompletedLoaded: false,
+      onInitStateChanged: onInitStateChanged,
     );
   }
 }
@@ -3400,6 +3999,7 @@ class SdkError {
 
 class SyncConnectionException implements Exception {
   final Object originalException;
+
   SyncConnectionException(this.originalException);
 }
 
@@ -3419,16 +4019,6 @@ enum SyncStatus {
   error,
 }
 
-class BadServerVersionsException implements Exception {
-  final Set<String> serverVersions, supportedVersions;
-
-  BadServerVersionsException(this.serverVersions, this.supportedVersions);
-
-  @override
-  String toString() =>
-      'Server supports the versions: ${serverVersions.toString()} but this application is only compatible with ${supportedVersions.toString()}.';
-}
-
 class BadServerLoginTypesException implements Exception {
   final Set<String> serverLoginTypes, supportedLoginTypes;
 
@@ -3444,9 +4034,9 @@ class FileTooBigMatrixException extends MatrixException {
   int maxFileSize;
 
   static String _formatFileSize(int size) {
-    if (size < 1024) return '$size B';
-    final i = (log(size) / log(1024)).floor();
-    final num = (size / pow(1024, i));
+    if (size < 1000) return '$size B';
+    final i = (log(size) / log(1000)).floor();
+    final num = (size / pow(1000, i));
     final round = num.round();
     final numString = round < 10
         ? num.toStringAsFixed(2)
@@ -3460,7 +4050,7 @@ class FileTooBigMatrixException extends MatrixException {
       : super.fromJson({
           'errcode': MatrixError.M_TOO_LARGE,
           'error':
-              'File size ${_formatFileSize(actualFileSize)} exceeds allowed maximum of ${_formatFileSize(maxFileSize)}'
+              'File size ${_formatFileSize(actualFileSize)} exceeds allowed maximum of ${_formatFileSize(maxFileSize)}',
         });
 
   @override
@@ -3479,10 +4069,59 @@ class ArchivedRoom {
 class _EventPendingDecryption {
   DateTime addedAt = DateTime.now();
 
-  EventUpdate event;
+  Event event;
 
   bool get timedOut =>
       addedAt.add(Duration(minutes: 5)).isBefore(DateTime.now());
 
   _EventPendingDecryption(this.event);
+}
+
+enum InitState {
+  /// Initialization has been started. Client fetches information from the database.
+  initializing,
+
+  /// The database has been updated. A migration is in progress.
+  migratingDatabase,
+
+  /// The encryption module will be set up now. For the first login this also
+  /// includes uploading keys to the server.
+  settingUpEncryption,
+
+  /// The client is loading rooms, device keys and account data from the
+  /// database.
+  loadingData,
+
+  /// The client waits now for the first sync before procceeding. Get more
+  /// information from `Client.onSyncUpdate`.
+  waitingForFirstSync,
+
+  /// Initialization is complete without errors. The client is now either
+  /// logged in or no active session was found.
+  finished,
+
+  /// Initialization has been completed with an error.
+  error,
+}
+
+/// Sets the security level with which devices keys should be shared with
+enum ShareKeysWith {
+  /// Keys are shared with all devices if they are not explicitely blocked
+  all,
+
+  /// Once a user has enabled cross signing, keys are no longer shared with
+  /// devices which are not cross verified by the cross signing keys of this
+  /// user. This does not require that the user needs to be verified.
+  crossVerifiedIfEnabled,
+
+  /// Keys are only shared with cross verified devices. If a user has not
+  /// enabled cross signing, then all devices must be verified manually first.
+  /// This does not require that the user needs to be verified.
+  crossVerified,
+
+  /// Keys are only shared with direct verified devices. So either the device
+  /// or the user must be manually verified first, before keys are shared. By
+  /// using cross signing, it is enough to verify the user and then the user
+  /// can verify their devices.
+  directlyVerifiedOnly,
 }

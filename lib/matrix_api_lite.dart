@@ -21,7 +21,8 @@
 * SOFTWARE.
 */
 
-library matrix_api_lite;
+/// Lightweight wrapper around the raw matrix API.
+library;
 
 export 'matrix_api_lite/generated/model.dart';
 export 'matrix_api_lite/matrix_api.dart';
@@ -38,7 +39,6 @@ export 'matrix_api_lite/model/auth/authentication_types.dart';
 export 'matrix_api_lite/model/auth/authentication_user_identifier.dart';
 export 'matrix_api_lite/model/basic_event.dart';
 export 'matrix_api_lite/model/basic_event_with_sender.dart';
-export 'matrix_api_lite/model/basic_room_event.dart';
 export 'matrix_api_lite/model/event_types.dart';
 export 'matrix_api_lite/model/events/forwarded_room_key_content.dart';
 export 'matrix_api_lite/model/events/image_pack_content.dart';
@@ -50,7 +50,6 @@ export 'matrix_api_lite/model/events/room_key_request_content.dart';
 export 'matrix_api_lite/model/events/secret_storage_default_key_content.dart';
 export 'matrix_api_lite/model/events/secret_storage_key_content.dart';
 export 'matrix_api_lite/model/events/tombstone_content.dart';
-export 'matrix_api_lite/model/matrix_connection_exception.dart';
 export 'matrix_api_lite/model/matrix_event.dart';
 export 'matrix_api_lite/model/matrix_exception.dart';
 export 'matrix_api_lite/model/matrix_keys.dart';

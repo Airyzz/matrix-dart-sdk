@@ -23,9 +23,8 @@ import 'package:matrix/matrix.dart';
 import '../fake_client.dart';
 
 void main() {
-  group('Encrypt/Decrypt room message', () {
+  group('Encrypt/Decrypt room message', tags: 'olm', () {
     Logs().level = Level.error;
-    var olmEnabled = true;
 
     late Client client;
     final roomId = '!726s6s6q:example.com';
@@ -33,23 +32,14 @@ void main() {
     late Map<String, dynamic> payload;
     final now = DateTime.now();
 
-    test('setupClient', () async {
-      try {
-        await olm.init();
-        olm.get_library_version();
-      } catch (e) {
-        olmEnabled = false;
-        Logs().w('[LibOlm] Failed to load LibOlm', e);
-      }
-      Logs().i('[LibOlm] Enabled: $olmEnabled');
-      if (!olmEnabled) return;
-
+    setUpAll(() async {
+      await olm.init();
+      olm.get_library_version();
       client = await getClient();
       room = client.getRoomById(roomId)!;
     });
 
     test('encrypt payload', () async {
-      if (!olmEnabled) return;
       payload = await client.encryption!.encryptGroupMessagePayload(roomId, {
         'msgtype': 'm.text',
         'text': 'Hello foxies!',
@@ -62,7 +52,6 @@ void main() {
     });
 
     test('decrypt payload', () async {
-      if (!olmEnabled) return;
       final encryptedEvent = Event(
         type: EventTypes.Encrypted,
         content: payload,
@@ -72,7 +61,7 @@ void main() {
         senderId: client.userID!,
       );
       final decryptedEvent =
-          await client.encryption!.decryptRoomEvent(roomId, encryptedEvent);
+          await client.encryption!.decryptRoomEvent(encryptedEvent);
       expect(decryptedEvent.type, 'm.room.message');
       expect(decryptedEvent.content['msgtype'], 'm.text');
       expect(decryptedEvent.content['text'], 'Hello foxies!');
@@ -80,7 +69,6 @@ void main() {
     });
 
     test('decrypt payload without device_id', () async {
-      if (!olmEnabled) return;
       payload.remove('device_id');
       payload.remove('sender_key');
       final encryptedEvent = Event(
@@ -92,7 +80,7 @@ void main() {
         senderId: client.userID!,
       );
       final decryptedEvent =
-          await client.encryption!.decryptRoomEvent(roomId, encryptedEvent);
+          await client.encryption!.decryptRoomEvent(encryptedEvent);
       expect(decryptedEvent.type, 'm.room.message');
       expect(decryptedEvent.content['msgtype'], 'm.text');
       expect(decryptedEvent.content['text'], 'Hello foxies!');
@@ -100,7 +88,6 @@ void main() {
     });
 
     test('decrypt payload nocache', () async {
-      if (!olmEnabled) return;
       client.encryption!.keyManager.clearInboundGroupSessions();
       final encryptedEvent = Event(
         type: EventTypes.Encrypted,
@@ -111,16 +98,14 @@ void main() {
         senderId: '@alice:example.com',
       );
       final decryptedEvent =
-          await client.encryption!.decryptRoomEvent(roomId, encryptedEvent);
+          await client.encryption!.decryptRoomEvent(encryptedEvent);
       expect(decryptedEvent.type, 'm.room.message');
       expect(decryptedEvent.content['msgtype'], 'm.text');
       expect(decryptedEvent.content['text'], 'Hello foxies!');
-      await client.encryption!
-          .decryptRoomEvent(roomId, encryptedEvent, store: true);
+      await client.encryption!.decryptRoomEvent(encryptedEvent, store: true);
     });
 
     test('dispose client', () async {
-      if (!olmEnabled) return;
       await client.dispose(closeDatabase: true);
     });
   });

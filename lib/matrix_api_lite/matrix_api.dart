@@ -56,6 +56,11 @@ class MatrixApi extends Api {
     super.unexpectedResponse(response, body);
   }
 
+  @override
+  Never bodySizeExceeded(int expected, int actual) {
+    throw EventTooLarge(expected, actual);
+  }
+
   MatrixApi({
     Uri? homeserver,
     String? accessToken,
@@ -107,65 +112,42 @@ class MatrixApi extends Api {
 
     late http.Response resp;
     Map<String, Object?>? jsonResp = <String, Object?>{};
-    try {
-      switch (type) {
-        case RequestType.GET:
-          resp = await httpClient.get(url, headers: headers);
-          break;
-        case RequestType.POST:
-          resp = await httpClient.post(url, body: json, headers: headers);
-          break;
-        case RequestType.PUT:
-          resp = await httpClient.put(url, body: json, headers: headers);
-          break;
-        case RequestType.DELETE:
-          resp = await httpClient.delete(url, headers: headers);
-          break;
-      }
-      var respBody = resp.body;
-      try {
-        respBody = utf8.decode(resp.bodyBytes);
-      } catch (_) {
-        // No-OP
-      }
-      if (resp.statusCode >= 500 && resp.statusCode < 600) {
-        throw Exception(respBody);
-      }
-      var jsonString = String.fromCharCodes(respBody.runes);
-      if (jsonString.startsWith('[') && jsonString.endsWith(']')) {
-        jsonString = '{"chunk":$jsonString}';
-      }
-      jsonResp = jsonDecode(jsonString)
-          as Map<String, Object?>?; // May throw FormatException
-    } catch (e, s) {
-      throw MatrixConnectionException(e, s);
+
+    switch (type) {
+      case RequestType.GET:
+        resp = await httpClient.get(url, headers: headers);
+        break;
+      case RequestType.POST:
+        resp = await httpClient.post(url, body: json, headers: headers);
+        break;
+      case RequestType.PUT:
+        resp = await httpClient.put(url, body: json, headers: headers);
+        break;
+      case RequestType.DELETE:
+        resp = await httpClient.delete(url, headers: headers);
+        break;
     }
+    var respBody = resp.body;
+    try {
+      respBody = utf8.decode(resp.bodyBytes);
+    } catch (_) {
+      // No-OP
+    }
+    if (resp.statusCode >= 500 && resp.statusCode < 600) {
+      throw Exception(respBody);
+    }
+    var jsonString = String.fromCharCodes(respBody.runes);
+    if (jsonString.startsWith('[') && jsonString.endsWith(']')) {
+      jsonString = '{"chunk":$jsonString}';
+    }
+    jsonResp = jsonDecode(jsonString)
+        as Map<String, Object?>?; // May throw FormatException
+
     if (resp.statusCode >= 400 && resp.statusCode < 500) {
       throw MatrixException(resp);
     }
 
     return jsonResp!;
-  }
-
-  /// Publishes end-to-end encryption keys for the device.
-  /// https://matrix.org/docs/spec/client_server/r0.6.1#post-matrix-client-r0-keys-query
-  Future<Map<String, int>> uploadKeys(
-      {MatrixDeviceKeys? deviceKeys,
-      Map<String, Object?>? oneTimeKeys,
-      Map<String, Object?>? fallbackKeys}) async {
-    final response = await request(
-      RequestType.POST,
-      '/client/v3/keys/upload',
-      data: {
-        if (deviceKeys != null) 'device_keys': deviceKeys.toJson(),
-        if (oneTimeKeys != null) 'one_time_keys': oneTimeKeys,
-        if (fallbackKeys != null) ...{
-          'fallback_keys': fallbackKeys,
-          'org.matrix.msc2732.fallback_keys': fallbackKeys,
-        },
-      },
-    );
-    return Map<String, int>.from(response['one_time_key_counts'] as Map);
   }
 
   /// This endpoint allows the creation, modification and deletion of pushers
@@ -220,19 +202,34 @@ class MatrixApi extends Api {
 
   @Deprecated('Use [deleteRoomKeyBySessionId] instead')
   Future<RoomKeysUpdateResponse> deleteRoomKeysBySessionId(
-      String roomId, String sessionId, String version) async {
+    String roomId,
+    String sessionId,
+    String version,
+  ) async {
     return deleteRoomKeyBySessionId(roomId, sessionId, version);
   }
 
   @Deprecated('Use [deleteRoomKeyBySessionId] instead')
-  Future<RoomKeysUpdateResponse> putRoomKeysBySessionId(String roomId,
-      String sessionId, String version, KeyBackupData data) async {
+  Future<RoomKeysUpdateResponse> putRoomKeysBySessionId(
+    String roomId,
+    String sessionId,
+    String version,
+    KeyBackupData data,
+  ) async {
     return putRoomKeyBySessionId(roomId, sessionId, version, data);
   }
 
   @Deprecated('Use [getRoomKeyBySessionId] instead')
   Future<KeyBackupData> getRoomKeysBySessionId(
-      String roomId, String sessionId, String version) async {
+    String roomId,
+    String sessionId,
+    String version,
+  ) async {
     return getRoomKeyBySessionId(roomId, sessionId, version);
   }
+}
+
+class EventTooLarge implements Exception {
+  int maxSize, actualSize;
+  EventTooLarge(this.maxSize, this.actualSize);
 }

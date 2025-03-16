@@ -23,98 +23,96 @@ import 'package:test/test.dart';
 
 import 'package:matrix/matrix.dart';
 import '../fake_client.dart';
-import '../fake_matrix_api.dart';
 
 void main() {
-  group('Cross Signing', () {
+  group('Cross Signing', tags: 'olm', () {
     Logs().level = Level.error;
-    var olmEnabled = true;
 
     late Client client;
 
-    test('setupClient', () async {
-      try {
-        await olm.init();
-        olm.get_library_version();
-      } catch (e) {
-        olmEnabled = false;
-        Logs().w('[LibOlm] Failed to load LibOlm', e);
-      }
-      Logs().i('[LibOlm] Enabled: $olmEnabled');
-      if (!olmEnabled) return;
-
+    setUpAll(() async {
+      await olm.init();
+      olm.get_library_version();
       client = await getClient();
+      await client.abortSync();
     });
 
     test('basic things', () async {
-      if (!olmEnabled) return;
       expect(client.encryption?.crossSigning.enabled, true);
     });
 
     test('selfSign', () async {
-      if (!olmEnabled) return;
       final key = client.userDeviceKeys[client.userID]!.masterKey!;
       key.setDirectVerified(false);
       FakeMatrixApi.calledEndpoints.clear();
       await client.encryption!.crossSigning.selfSign(recoveryKey: ssssKey);
       expect(key.directVerified, true);
       expect(
-          FakeMatrixApi.calledEndpoints
-              .containsKey('/client/v3/keys/signatures/upload'),
-          true);
+        FakeMatrixApi.calledEndpoints
+            .containsKey('/client/v3/keys/signatures/upload'),
+        true,
+      );
       expect(await client.encryption!.crossSigning.isCached(), true);
     });
 
     test('signable', () async {
-      if (!olmEnabled) return;
       expect(
-          client.encryption!.crossSigning
-              .signable([client.userDeviceKeys[client.userID!]!.masterKey!]),
-          true);
+        client.encryption!.crossSigning
+            .signable([client.userDeviceKeys[client.userID!]!.masterKey!]),
+        true,
+      );
       expect(
-          client.encryption!.crossSigning.signable([
-            client.userDeviceKeys[client.userID!]!.deviceKeys[client.deviceID!]!
-          ]),
-          false);
+        client.encryption!.crossSigning.signable([
+          client.userDeviceKeys[client.userID!]!.deviceKeys[client.deviceID!]!,
+        ]),
+        false,
+      );
       expect(
-          client.encryption!.crossSigning.signable([
-            client.userDeviceKeys[client.userID!]!.deviceKeys['OTHERDEVICE']!
-          ]),
-          true);
+        client.encryption!.crossSigning.signable([
+          client.userDeviceKeys[client.userID!]!.deviceKeys['OTHERDEVICE']!,
+        ]),
+        true,
+      );
       expect(
-          client.encryption!.crossSigning.signable([
-            client
-                .userDeviceKeys['@alice:example.com']!.deviceKeys['JLAFKJWSCS']!
-          ]),
-          false);
+        client.encryption!.crossSigning.signable([
+          client
+              .userDeviceKeys['@alice:example.com']!.deviceKeys['JLAFKJWSCS']!,
+        ]),
+        false,
+      );
     });
 
     test('sign', () async {
-      if (!olmEnabled) return;
       FakeMatrixApi.calledEndpoints.clear();
       await client.encryption!.crossSigning.sign([
         client.userDeviceKeys[client.userID!]!.masterKey!,
         client.userDeviceKeys[client.userID!]!.deviceKeys['OTHERDEVICE']!,
-        client.userDeviceKeys['@othertest:fakeServer.notExisting']!.masterKey!
+        client.userDeviceKeys['@othertest:fakeServer.notExisting']!.masterKey!,
       ]);
-      final body = json.decode(FakeMatrixApi
-          .calledEndpoints['/client/v3/keys/signatures/upload']!.first);
-      expect(body['@test:fakeServer.notExisting']?.containsKey('OTHERDEVICE'),
-          true);
+      final body = json.decode(
+        FakeMatrixApi
+            .calledEndpoints['/client/v3/keys/signatures/upload']!.first,
+      );
       expect(
-          body['@test:fakeServer.notExisting'].containsKey(
-              client.userDeviceKeys[client.userID]!.masterKey!.publicKey),
-          true);
+        body['@test:fakeServer.notExisting']?.containsKey('OTHERDEVICE'),
+        true,
+      );
       expect(
-          body['@othertest:fakeServer.notExisting'].containsKey(client
-              .userDeviceKeys['@othertest:fakeServer.notExisting']
-              ?.masterKey
-              ?.publicKey),
-          true);
+        body['@test:fakeServer.notExisting'].containsKey(
+          client.userDeviceKeys[client.userID]!.masterKey!.publicKey,
+        ),
+        true,
+      );
+      expect(
+        body['@othertest:fakeServer.notExisting'].containsKey(
+          client.userDeviceKeys['@othertest:fakeServer.notExisting']?.masterKey
+              ?.publicKey,
+        ),
+        true,
+      );
     });
 
     test('dispose client', () async {
-      if (!olmEnabled) return;
       await client.dispose(closeDatabase: true);
     });
   });
